@@ -6,7 +6,8 @@
 #   或装好后随时: txnode        （软链到 /usr/local/bin/txnode）
 #
 # 非交互模式（保持向后兼容，可用于自动化）:
-#   bash deploy.sh install            安装 / 重装
+#   bash deploy.sh install            交互式安装 / 重装
+#   bash deploy.sh install --mode machine --panel-url https://panel.example.com --machine-id 1 --token TOKEN
 #   bash deploy.sh upgrade            升级
 #   bash deploy.sh status             查看状态
 #   bash deploy.sh start|stop|restart 启动 / 停止 / 重启
@@ -1001,7 +1002,10 @@ ensure_docker() {
     return
   fi
   warn "未检测到可用的 docker / docker compose 插件"
-  if confirm "自动安装 Docker（get.docker.com 官方脚本）？" "Y"; then
+
+  # 一键安装命令不能依赖 stdin 交互；非交互模式直接执行默认的
+  # 官方 Docker 安装路径。交互模式仍保留确认提示。
+  if [ "${NONINTERACTIVE_INSTALL:-0}" = "1" ] || confirm "自动安装 Docker（get.docker.com 官方脚本）？" "Y"; then
     info "安装 Docker..."
     curl -fsSL https://get.docker.com | bash
     systemctl enable --now docker 2>/dev/null || true
@@ -1015,6 +1019,89 @@ ensure_docker() {
 # ════════════════════════════════════════════════════════════════════
 #  配置向导（写 config.yml + docker-compose.yml）
 # ════════════════════════════════════════════════════════════════════
+
+# 非交互安装参数。用于 TXBoard 等控制面生成可直接复制执行的一键命令。
+# 支持 machine / node 两种模式；未传任何参数时仍走原交互向导。
+parse_install_args() {
+  MODE_STR=""
+  PANEL_URL=""
+  MACHINE_ID=""
+  NODE_ID=""
+  MACHINE_TOKEN=""
+  NODE_TOKEN=""
+  KERNEL="singbox"
+  LOG_LEVEL="info"
+  AUDIT_ENABLED="false"
+  REPORT_ALL="false"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --mode)
+        [ "$#" -ge 2 ] || fail "--mode 缺少参数"
+        MODE_STR="$2"; shift 2 ;;
+      --panel|--panel-url)
+        [ "$#" -ge 2 ] || fail "$1 缺少参数"
+        PANEL_URL="$2"; shift 2 ;;
+      --token)
+        [ "$#" -ge 2 ] || fail "--token 缺少参数"
+        if [ "${MODE_STR:-}" = "node" ]; then NODE_TOKEN="$2"; else MACHINE_TOKEN="$2"; fi
+        shift 2 ;;
+      --machine-id)
+        [ "$#" -ge 2 ] || fail "--machine-id 缺少参数"
+        MACHINE_ID="$2"; shift 2 ;;
+      --node-id)
+        [ "$#" -ge 2 ] || fail "--node-id 缺少参数"
+        NODE_ID="$2"; shift 2 ;;
+      --kernel)
+        [ "$#" -ge 2 ] || fail "--kernel 缺少参数"
+        KERNEL="$2"; shift 2 ;;
+      --log-level)
+        [ "$#" -ge 2 ] || fail "--log-level 缺少参数"
+        LOG_LEVEL="$2"; shift 2 ;;
+      --audit)
+        [ "$#" -ge 2 ] || fail "--audit 缺少参数"
+        AUDIT_ENABLED="$2"; shift 2 ;;
+      --report-all)
+        [ "$#" -ge 2 ] || fail "--report-all 缺少参数"
+        REPORT_ALL="$2"; shift 2 ;;
+      *)
+        fail "未知 install 参数: $1"
+        ;;
+    esac
+  done
+
+  PANEL_URL="${PANEL_URL%/}"
+  [[ "$PANEL_URL" =~ ^https?:// ]] || fail "--panel-url 必须以 http:// 或 https:// 开头"
+  [[ "$MODE_STR" =~ ^(machine|node)$ ]] || fail "--mode 只支持 machine 或 node"
+  [[ "$KERNEL" =~ ^(singbox|xray)$ ]] || fail "--kernel 只支持 singbox 或 xray"
+  [[ "$LOG_LEVEL" =~ ^(info|debug|warn|error)$ ]] || fail "--log-level 只支持 info/debug/warn/error"
+  [[ "$AUDIT_ENABLED" =~ ^(true|false)$ ]] || fail "--audit 只支持 true/false"
+  [[ "$REPORT_ALL" =~ ^(true|false)$ ]] || fail "--report-all 只支持 true/false"
+
+  if [ "$KERNEL" = "xray" ] && [ "$AUDIT_ENABLED" = "true" ]; then
+    fail "xray 内核不支持内嵌审计，请使用 --audit false"
+  fi
+
+  if [ "$MODE_STR" = "machine" ]; then
+    [[ "$MACHINE_ID" =~ ^[0-9]+$ ]] && [ "$MACHINE_ID" -gt 0 ] || fail "--machine-id 必须是正整数"
+    [ -n "$MACHINE_TOKEN" ] || fail "--token 不能为空"
+    NODE_ID=""
+    NODE_TOKEN=""
+  else
+    [[ "$NODE_ID" =~ ^[0-9]+$ ]] && [ "$NODE_ID" -gt 0 ] || fail "--node-id 必须是正整数"
+    # --token 在解析时可能先于 --mode 出现，统一在这里兼容。
+    if [ -z "$NODE_TOKEN" ] && [ -n "$MACHINE_TOKEN" ]; then
+      NODE_TOKEN="$MACHINE_TOKEN"
+      MACHINE_TOKEN=""
+    fi
+    [ -n "$NODE_TOKEN" ] || fail "--token 不能为空"
+    MACHINE_ID=""
+    MACHINE_TOKEN=""
+  fi
+
+  NONINTERACTIVE_INSTALL=1
+}
+
 read_panel_credentials() {
   echo
   info "配置向导（面板信息可在 Xboard 后台查到）"
@@ -1133,8 +1220,15 @@ EOF
 #  动作：安装 / 重装
 # ════════════════════════════════════════════════════════════════════
 do_install() {
+  if [ "$#" -gt 0 ]; then
+    parse_install_args "$@"
+    info "使用非交互安装参数: mode=$MODE_STR panel=$PANEL_URL"
+  else
+    NONINTERACTIVE_INSTALL=0
+    read_panel_credentials
+  fi
+
   ensure_docker
-  read_panel_credentials
   backup_config
   write_config_files
 
@@ -2587,7 +2681,13 @@ usage() {
     bash deploy.sh <命令>       非交互执行单个命令
 
   命令:
-    install        安装 / 重新部署（交互式向导）
+    install        安装 / 重新部署（无参数时进入交互式向导）
+      --mode machine --panel-url URL --machine-id ID --token TOKEN
+                   非交互机器模式安装（TXBoard 一键安装使用）
+      --mode node --panel-url URL --node-id ID --token TOKEN
+                   非交互单节点安装
+      [--kernel singbox|xray] [--log-level info|debug|warn|error]
+      [--audit true|false] [--report-all true|false]
     migrate        从 install.sh 部署导入配置并转成 docker 部署
     migrate --dry-run
                    只预览将要生成的配置，不写入任何文件
@@ -2626,7 +2726,9 @@ usage() {
 
   示例:
     bash deploy.sh                       # 进面板
-    bash deploy.sh install               # 直接安装
+    bash deploy.sh install               # 交互式安装
+    bash deploy.sh install --mode machine --panel-url https://panel.example.com --machine-id 12 --token TOKEN
+                                         # 非交互机器模式安装
     bash deploy.sh migrate               # 从 install.sh 导入
     bash deploy.sh migrate --dry-run     # 只看会生成什么
     bash deploy.sh upgrade               # 直接升级
@@ -2700,7 +2802,7 @@ main() {
   [ -d /etc ] || fail "仅支持 Linux"
 
   case "$action" in
-    install)     do_install ;;
+    install)     do_install "$@" ;;
     migrate|import) do_migrate_legacy "$mig_dry" ;;
     upgrade)     do_upgrade ;;
     status)      do_status ;;
