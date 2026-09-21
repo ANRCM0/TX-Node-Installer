@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - deploy.sh
+      - tests/**
       - .github/workflows/ci.yml
   pull_request:
     paths:
       - deploy.sh
+      - tests/**
       - .github/workflows/ci.yml
 
 jobs:
@@ -17,7 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Bash syntax
-        run: bash -n deploy.sh
+        run: |
+          bash -n deploy.sh
+          bash -n tests/install_args_test.sh
+      - name: Test non-interactive install arguments
+        run: bash tests/install_args_test.sh
       - name: Enforce public distribution boundary
         shell: bash
         run: |

@@ -6,9 +6,25 @@ This repository intentionally contains only deployment/bootstrap material. The T
 
 ## Install
 
+Interactive install:
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh)
 ```
+
+Non-interactive machine install (used by TXBoard):
+
+```bash
+curl -fsSL 'https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh' \
+  | sudo bash -s -- install --mode machine \
+      --panel-url 'https://panel.example.com' \
+      --machine-id 12 \
+      --token 'MACHINE_TOKEN'
+```
+
+Optional non-interactive flags include `--kernel singbox|xray`, `--log-level`,
+`--audit true|false`, and `--report-all true|false`. The non-interactive
+defaults are `singbox`, `info`, audit disabled, and `report_all=false`.
 
 After installation, use:
 
