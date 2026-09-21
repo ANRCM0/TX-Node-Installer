@@ -41,3 +41,12 @@ TX-Node-Installer (public deploy.sh)
 ```
 
 The installer repository must not contain TX-Node application source, private credentials, tokens, or production configuration.
+
+
+## Legacy systemd installer
+
+The public deployment path is the Docker-based `deploy.sh` above. The historical `install.sh` / direct binary-release path is not distributed from this repository; existing legacy installations can be imported by `deploy.sh migrate`.
+
+## License
+
+The deployment script follows the TX-Node project's MPL-2.0 licensing.
