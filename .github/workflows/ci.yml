@@ -1,0 +1,30 @@
+name: installer-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy.sh
+      - .github/workflows/ci.yml
+  pull_request:
+    paths:
+      - deploy.sh
+      - .github/workflows/ci.yml
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Bash syntax
+        run: bash -n deploy.sh
+      - name: Enforce public distribution boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ghcr.io/paimoncai/tx-node:latest' deploy.sh
+          grep -q 'PaiMonCai/TX-Node-Installer' deploy.sh
+          if grep -q 'raw.githubusercontent.com/PaiMonCai/TX-Node/main/deploy.sh' deploy.sh; then
+            echo "deploy.sh still depends on the source repository" >&2
+            exit 1
+          fi
