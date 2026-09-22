@@ -41,3 +41,36 @@ bash -c '
 ' _ "$ROOT/deploy.sh"
 
 echo "non-interactive machine install config: ok"
+
+# Existing docker deployment + non-interactive install must append a panel
+# instance instead of overwriting the existing config.
+INSTALL_DIR="$TMP/existing" \
+APP_NAME="tx-node-existing" \
+CLI_LINK="$TMP/txnode-existing-cli" \
+bash -c '
+  set -euo pipefail
+  source "$1"
+
+  ensure_docker() { :; }
+  detect_deploy_mode() { DEPLOY_MODE="docker"; }
+  is_installed() { return 0; }
+  appended=0
+  do_add_panel_instance() {
+    [ "${NONINTERACTIVE_INSTALL:-0}" = "1" ]
+    [ "$MODE_STR" = "machine" ]
+    [ "$PANEL_URL" = "https://panel-b.example.com" ]
+    [ "$MACHINE_ID" = "7" ]
+    [ "$MACHINE_TOKEN" = "token-b" ]
+    appended=1
+  }
+
+  do_install \
+    --mode machine \
+    --panel-url "https://panel-b.example.com/" \
+    --machine-id 7 \
+    --token "token-b"
+
+  [ "$appended" = "1" ]
+' _ "$ROOT/deploy.sh"
+
+echo "existing install non-interactive append path: ok"
