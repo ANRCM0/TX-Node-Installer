@@ -38,6 +38,28 @@ The runtime image defaults to:
 ghcr.io/paimoncai/tx-node:latest
 ```
 
+
+## Multi-panel hosts
+
+If the server already has a Docker TX-Node deployment, running the installer again no longer overwrites the existing configuration by default.
+
+Interactive mode offers:
+
+- **Add panel / instance** — recommended. The current single-panel config is preserved and converted to `instances:` when necessary, then the new Node or Machine target is appended.
+- **Create isolated TX-Node** — creates `tx-node-2`, `/etc/txnode-2`, `/usr/local/bin/txnode-2`, then `tx-node-3`, and so on. Each isolated profile gets its own health port.
+- **Overwrite current deployment** — explicit destructive reconfiguration for cases where replacement is actually intended.
+
+The TXBoard non-interactive command is additive as well. If `install --mode machine|node ...` is run on a host that already has TX-Node, the supplied Panel + Machine/Node target is appended as a new instance. An identical target is treated as an idempotent no-op.
+
+After installation, the same flows are available through:
+
+```bash
+txnode panel-add
+txnode isolated-add
+```
+
+Before adding an instance, the installer backs up the existing config. It validates the restarted container, checks the configured health endpoint and obvious bind conflicts, and restores the previous config if the new instance cannot start cleanly.
+
 ## Architecture
 
 ```text
