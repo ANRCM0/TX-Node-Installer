@@ -34,6 +34,10 @@ APP_NAME="${APP_NAME:-tx-node}"
 INSTALL_DIR="${INSTALL_DIR:-/etc/txnode}"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 CONFIG_FILE="$INSTALL_DIR/config.yml"
+# Canonical container config target. The legacy target is read only when
+# repairing already-generated Compose files during the compatibility window.
+CONTAINER_CONFIG_FILE="/etc/txnode/config.yml"
+LEGACY_CONTAINER_CONFIG_FILE="/etc/xboard-node/config.yml"
 BACKUP_DIR="$INSTALL_DIR/backups"
 IMAGE="${IMAGE:-ghcr.io/paimoncai/tx-node:latest}"
 CLI_LINK="${CLI_LINK:-/usr/local/bin/txnode}"
@@ -877,8 +881,9 @@ services:
     container_name: $APP_NAME
     restart: unless-stopped
     network_mode: host
+    command: ["-c", "$CONTAINER_CONFIG_FILE"]
     volumes:
-      - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+      - $CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro
       - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF
   ok "compose 文件已写入 $COMPOSE_FILE"
@@ -1236,8 +1241,9 @@ services:
     container_name: $APP_NAME
     restart: unless-stopped
     network_mode: host
+    command: ["-c", "$CONTAINER_CONFIG_FILE"]
     volumes:
-      - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+      - $CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro
       - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF
   ok "compose 文件已写入 $COMPOSE_FILE"
@@ -1725,10 +1731,13 @@ ensure_remote_update_mount() {
   fi
 
   local tmp="$COMPOSE_FILE.remote-update.$$"
-  awk -v needle="$CONFIG_FILE:/etc/xboard-node/config.yml:ro" \
+  local canonical_needle="$CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro"
+  local legacy_needle="$CONFIG_FILE:$LEGACY_CONTAINER_CONFIG_FILE:ro"
+  awk -v canonical="$canonical_needle" \
+      -v legacy="$legacy_needle" \
       -v mount="      - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR" '
     { print }
-    index($0, needle) { print mount; inserted=1 }
+    index($0, canonical) || index($0, legacy) { print mount; inserted=1 }
     END { if (!inserted) exit 42 }
   ' "$COMPOSE_FILE" > "$tmp" || {
     rm -f "$tmp" 2>/dev/null || true

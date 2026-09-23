@@ -29,8 +29,9 @@ services:
     container_name: $APP_NAME
     restart: unless-stopped
     network_mode: host
+    command: ["-c", "/etc/txnode/config.yml"]
     volumes:
-      - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+      - $CONFIG_FILE:/etc/txnode/config.yml:ro
 EOF
 
 echo "[test] official latest compose is eligible"
@@ -38,6 +39,20 @@ remote_update_compose_supported
 
 echo "[test] control mount is added exactly once"
 ensure_remote_update_mount
+ensure_remote_update_mount
+[ "$(grep -Fc "$REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR" "$COMPOSE_FILE")" -eq 1 ]
+
+echo "[test] old Compose config target remains repairable"
+cat > "$COMPOSE_FILE" <<EOF
+services:
+  tx-node:
+    image: ghcr.io/paimoncai/tx-node:latest
+    container_name: $APP_NAME
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+EOF
 ensure_remote_update_mount
 [ "$(grep -Fc "$REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR" "$COMPOSE_FILE")" -eq 1 ]
 

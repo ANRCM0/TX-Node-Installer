@@ -38,6 +38,12 @@ bash -c '
 
   grep -Fxq "    image: ghcr.io/paimoncai/tx-node:latest" "$COMPOSE_FILE"
   grep -Fxq "    network_mode: host" "$COMPOSE_FILE"
+  grep -Fxq "    command: [\"-c\", \"/etc/txnode/config.yml\"]" "$COMPOSE_FILE"
+  grep -Fxq "      - $CONFIG_FILE:/etc/txnode/config.yml:ro" "$COMPOSE_FILE"
+  if grep -Fq "$CONFIG_FILE:/etc/xboard-node/config.yml:ro" "$COMPOSE_FILE"; then
+    echo "new install still writes the legacy container config target" >&2
+    exit 1
+  fi
 ' _ "$ROOT/deploy.sh"
 
 echo "non-interactive machine install config: ok"

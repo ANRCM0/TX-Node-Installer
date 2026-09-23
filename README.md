@@ -66,6 +66,25 @@ The runtime image defaults to:
 ghcr.io/paimoncai/tx-node:latest
 ```
 
+### Container config path
+
+The canonical host and container config path is now:
+
+```text
+host:      /etc/txnode/config.yml
+container: /etc/txnode/config.yml
+```
+
+New Compose files also pass `-c /etc/txnode/config.yml` explicitly. This keeps
+the Installer compatible with older TX-Node images whose Docker default command
+still referenced the historical path.
+
+Already-generated Compose files that mount the host config into
+`/etc/xboard-node/config.yml` remain upgradeable during the compatibility
+window: current TX-Node images retain a bounded fallback only when the canonical
+container config is absent, and the Installer's remote-update repair recognizes
+both mount targets. New deployments do not generate the legacy container target.
+
 
 ## Multi-panel hosts
 
