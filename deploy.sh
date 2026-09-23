@@ -61,6 +61,7 @@ SERVICE_NAME="xboard-node.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 SB_BINARY="/usr/local/bin/xboard-node"
 XBCTL_PATH="/usr/local/bin/xbctl"
+XBCTL_COMPAT_PATH="${XBCTL_COMPAT_PATH:-/usr/bin/xbctl}"
 # 本脚本的持久化副本（快捷命令 txnode 应该指向这里，而不是 $SELF_PATH）
 SELF_COPY="$INSTALL_DIR/deploy.sh"
 # 网络兜底：$SELF_PATH 不可靠时从这里重新拉一份脚本
@@ -3054,7 +3055,7 @@ do_legacy_cleanup() {
     systemctl daemon-reload >/dev/null 2>&1 || true
   fi
 
-  for legacy_bin in "$SB_BINARY" "$XBCTL_PATH" "/usr/bin/xbctl"; do
+  for legacy_bin in "$SB_BINARY" "$XBCTL_PATH" "$XBCTL_COMPAT_PATH"; do
     if [ -e "$legacy_bin" ] || [ -L "$legacy_bin" ]; then
       rm -f "$legacy_bin" || warnings+=("remove $legacy_bin")
     fi
