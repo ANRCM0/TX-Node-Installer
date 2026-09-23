@@ -2858,7 +2858,7 @@ do_add_node() {
     warn "当前已启用 instances 多面板布局，请使用「添加面板 / 实例」。"
     return 0
   fi
-  if [ "$DEPLOY_MODE" = "legacy" ] && [ -x "$XBCTL_PATH" ]; then
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
     warn "当前只有 install.sh legacy 部署；其管理面已冻结"
     hint "请先执行 txnode migrate（或菜单「从 install.sh 导入」）迁移到 Docker，再管理节点"
     return 0
@@ -3064,7 +3064,7 @@ do_legacy_cleanup() {
     rm -rf "$LEGACY_INSTALL_ROOT" || warnings+=("remove $LEGACY_INSTALL_ROOT")
   fi
 
-  if detect_legacy_install; then
+  if [ -f "$SERVICE_PATH" ] || [ -x "$SB_BINARY" ] || [ -x "$XBCTL_PATH" ]; then
     warnings+=("legacy runtime markers still detected")
   fi
 
