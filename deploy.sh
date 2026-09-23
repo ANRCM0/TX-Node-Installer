@@ -1730,7 +1730,7 @@ ensure_remote_update_mount() {
     return 0
   fi
 
-  local tmp="$COMPOSE_FILE.remote-update.$"
+  local tmp="$COMPOSE_FILE.remote-update.$$"
   local canonical_needle="$CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro"
   local legacy_needle="$CONFIG_FILE:$LEGACY_CONTAINER_CONFIG_FILE:ro"
   awk -v canonical="$canonical_needle" \
