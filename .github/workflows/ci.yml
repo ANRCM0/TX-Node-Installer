@@ -27,6 +27,21 @@ jobs:
           bash -n tests/legacy_cleanup_test.sh
       - name: Test non-interactive install arguments
         run: bash tests/install_args_test.sh
+      - name: Smoke canonical mount against legacy-style image layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/legacy-layout.Dockerfile <<'EOF'
+          FROM alpine:3.20
+          RUN mkdir -p /etc/xboard-node
+          WORKDIR /etc/xboard-node
+          CMD ["cat", "/etc/xboard-node/config.yml"]
+          EOF
+          docker build -q -t txnode-legacy-layout-smoke -f /tmp/legacy-layout.Dockerfile /tmp
+          cfg="$(mktemp)"
+          printf 'canonical-mount-ok\n' > "$cfg"
+          output="$(docker run --rm -v "$cfg:/etc/txnode/config.yml:ro" txnode-legacy-layout-smoke cat /etc/txnode/config.yml)"
+          test "$output" = "canonical-mount-ok"
       - name: Test multi-panel and isolated installer flows
         run: bash tests/deploy_multi_instance_test.sh
       - name: Test bounded remote runtime update bridge
