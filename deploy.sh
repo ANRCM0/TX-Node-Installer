@@ -69,6 +69,18 @@ SELF_COPY="$INSTALL_DIR/deploy.sh"
 TXNODE_INSTALLER_REPO="${TXNODE_INSTALLER_REPO:-PaiMonCai/TX-Node-Installer}"
 SCRIPT_RAW_URL="${SCRIPT_RAW_URL:-https://raw.githubusercontent.com/${TXNODE_INSTALLER_REPO}/main/deploy.sh}"
 
+# Machine Runtime Update v1 bridge. TX-Node receives a typed control-plane
+# request and writes only a bounded request file into this bind-mounted
+# directory. Host-side systemd delegates the actual upgrade back to this
+# Installer runtime; the container never receives the Docker socket.
+REMOTE_UPDATE_DIR="${REMOTE_UPDATE_DIR:-$INSTALL_DIR/remote-update}"
+REMOTE_UPDATE_REQUEST="$REMOTE_UPDATE_DIR/request.env"
+REMOTE_UPDATE_STATUS="$REMOTE_UPDATE_DIR/status.env"
+REMOTE_UPDATE_CAPABILITIES="$REMOTE_UPDATE_DIR/capabilities.env"
+REMOTE_UPDATE_CONTAINER_DIR="/run/txnode-update"
+REMOTE_UPDATE_IMAGE="ghcr.io/paimoncai/tx-node:latest"
+
+
 # 运行模式：docker | legacy | none，由 detect_deploy_mode 填充
 DEPLOY_MODE=""
 
@@ -840,7 +852,8 @@ EOF
     return 1
   fi
 
-  mkdir -p "$INSTALL_DIR" "$BACKUP_DIR"
+  mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$REMOTE_UPDATE_DIR"
+  chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
   # 源配置快照：即使后面失败，也能从这里回滚
   local src_backup="$BACKUP_DIR/legacy-source.$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$src_backup"
@@ -865,6 +878,7 @@ services:
     network_mode: host
     volumes:
       - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+      - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF
   ok "compose 文件已写入 $COMPOSE_FILE"
 
@@ -921,6 +935,7 @@ EOF
   ok "txnode 容器运行中"
 
   install_cli_link
+  install_remote_update_bridge
   mig_finish_legacy "$legacy_was_active"
   return 0
 }
@@ -1166,7 +1181,8 @@ read_panel_credentials() {
 }
 
 write_config_files() {
-  mkdir -p "$INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR" "$REMOTE_UPDATE_DIR"
+  chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
 
   if [ "$MODE_STR" = "machine" ]; then
     PANEL_BLOCK=$(cat <<EOF
@@ -1221,6 +1237,7 @@ services:
     network_mode: host
     volumes:
       - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+      - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF
   ok "compose 文件已写入 $COMPOSE_FILE"
 }
@@ -1281,6 +1298,7 @@ do_install() {
   fi
 
   install_cli_link
+  install_remote_update_bridge
 
   echo
   echo -e "${BOLD}== 部署完成 ==${NC}"
@@ -1670,6 +1688,305 @@ restore_autostart() {
 }
 
 # ════════════════════════════════════════════════════════════════════
+#  Machine Runtime Update v1 — Installer-owned host bridge
+# ════════════════════════════════════════════════════════════════════
+
+remote_update_unit_base() {
+  printf '%s' "$APP_NAME" | tr -c 'A-Za-z0-9_.@-' '-'
+}
+
+remote_update_service_path() {
+  echo "/etc/systemd/system/$(remote_update_unit_base)-updater.service"
+}
+
+remote_update_path_path() {
+  echo "/etc/systemd/system/$(remote_update_unit_base)-updater.path"
+}
+
+remote_update_host_supported() {
+  command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+remote_update_compose_supported() {
+  [ -f "$COMPOSE_FILE" ] || return 1
+  local configured
+  configured=$(awk '/^[[:space:]]*image:[[:space:]]*/ {print $2; exit}' "$COMPOSE_FILE" 2>/dev/null || true)
+  [ "$configured" = "$REMOTE_UPDATE_IMAGE" ]
+}
+
+ensure_remote_update_mount() {
+  [ -f "$COMPOSE_FILE" ] || return 1
+  mkdir -p "$REMOTE_UPDATE_DIR"
+  chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
+
+  if grep -Fq "$REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR" "$COMPOSE_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  local tmp="$COMPOSE_FILE.remote-update.$$"
+  awk -v needle="$CONFIG_FILE:/etc/xboard-node/config.yml:ro" \
+      -v mount="      - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR" '
+    { print }
+    index($0, needle) { print mount; inserted=1 }
+    END { if (!inserted) exit 42 }
+  ' "$COMPOSE_FILE" > "$tmp" || {
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  }
+  mv -f "$tmp" "$COMPOSE_FILE"
+  return 0
+}
+
+write_remote_update_capability() {
+  mkdir -p "$REMOTE_UPDATE_DIR"
+  local tmp="$REMOTE_UPDATE_CAPABILITIES.tmp.$$"
+  {
+    echo "schema=1"
+    echo "updater_available=true"
+    echo "target=latest"
+  } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$REMOTE_UPDATE_CAPABILITIES"
+}
+
+clear_remote_update_capability() {
+  rm -f "$REMOTE_UPDATE_CAPABILITIES" 2>/dev/null || true
+}
+
+install_remote_update_bridge() {
+  clear_remote_update_capability
+
+  if ! remote_update_host_supported; then
+    hint "systemd 不可用，远程 Runtime Update bridge 保持关闭"
+    return 0
+  fi
+  if ! remote_update_compose_supported; then
+    hint "当前 compose 不是官方 latest 镜像，远程 Runtime Update bridge 保持关闭"
+    return 0
+  fi
+  if ! ensure_remote_update_mount; then
+    warn "无法为 compose 加入 Runtime Update 控制目录，远程更新保持关闭"
+    return 0
+  fi
+  if ! materialize_self_copy; then
+    warn "无法取得 Installer 持久化副本，远程 Runtime Update bridge 保持关闭"
+    return 0
+  fi
+
+  mkdir -p "$REMOTE_UPDATE_DIR"
+  chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
+
+  local service_file path_file unit
+  unit="$(remote_update_unit_base)-updater"
+  service_file="$(remote_update_service_path)"
+  path_file="$(remote_update_path_path)"
+
+  cat > "$service_file" <<EOF
+[Unit]
+Description=TX-Node bounded runtime update for $APP_NAME
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment="APP_NAME=$APP_NAME"
+Environment="INSTALL_DIR=$INSTALL_DIR"
+Environment="CLI_LINK=$CLI_LINK"
+Environment="IMAGE=$REMOTE_UPDATE_IMAGE"
+Environment="REMOTE_UPDATE_DIR=$REMOTE_UPDATE_DIR"
+ExecStart=/bin/bash $SELF_COPY remote-upgrade-apply
+TimeoutStartSec=600
+Nice=10
+EOF
+
+  cat > "$path_file" <<EOF
+[Unit]
+Description=Watch TX-Node runtime update requests for $APP_NAME
+After=docker.service
+
+[Path]
+PathChanged=$REMOTE_UPDATE_REQUEST
+Unit=$unit.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  chmod 644 "$service_file" "$path_file"
+  systemctl daemon-reload >/dev/null 2>&1 || {
+    warn "systemd daemon-reload 失败，远程 Runtime Update bridge 保持关闭"
+    return 0
+  }
+  if ! systemctl enable --now "$unit.path" >/dev/null 2>&1; then
+    warn "无法启用 $unit.path，远程 Runtime Update bridge 保持关闭"
+    return 0
+  fi
+
+  write_remote_update_capability
+  ok "已启用 TXBoard 远程 Runtime Update bridge"
+}
+
+disable_remote_update_bridge() {
+  clear_remote_update_capability
+  if remote_update_host_supported; then
+    local unit
+    unit="$(remote_update_unit_base)-updater"
+    systemctl disable --now "$unit.path" >/dev/null 2>&1 || true
+    systemctl stop "$unit.service" >/dev/null 2>&1 || true
+    rm -f "$(remote_update_service_path)" "$(remote_update_path_path)" 2>/dev/null || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+}
+
+parse_remote_update_request() {
+  local file="${1:-$REMOTE_UPDATE_REQUEST}"
+  REMOTE_REQUEST_ID=""
+  REMOTE_REQUEST_TARGET=""
+
+  [ -f "$file" ] || return 1
+  [ "$(grep -c '^schema=' "$file" 2>/dev/null || true)" = "1" ] || return 1
+  [ "$(grep -c '^request_id=' "$file" 2>/dev/null || true)" = "1" ] || return 1
+  [ "$(grep -c '^target=' "$file" 2>/dev/null || true)" = "1" ] || return 1
+
+  if grep -Ev '^(schema=1|request_id=[A-Za-z0-9._:-]{1,64}|target=latest|[[:space:]]*)$' "$file" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local schema
+  schema=$(sed -n 's/^schema=//p' "$file" | head -n1)
+  REMOTE_REQUEST_ID=$(sed -n 's/^request_id=//p' "$file" | head -n1)
+  REMOTE_REQUEST_TARGET=$(sed -n 's/^target=//p' "$file" | head -n1)
+
+  [ "$schema" = "1" ] || return 1
+  [[ "$REMOTE_REQUEST_ID" =~ ^[A-Za-z0-9._:-]{1,64}$ ]] || return 1
+  [ "$REMOTE_REQUEST_TARGET" = "latest" ] || return 1
+  return 0
+}
+
+remote_update_status_value() {
+  local key="$1"
+  [ -f "$REMOTE_UPDATE_STATUS" ] || return 0
+  sed -n "s/^$key=//p" "$REMOTE_UPDATE_STATUS" 2>/dev/null | head -n1
+}
+
+write_remote_update_status() {
+  local request_id="$1" target="$2" status="$3" message="${4:-}"
+  mkdir -p "$REMOTE_UPDATE_DIR"
+  message=$(printf '%s' "$message" | tr '\r\n=' '   ' | cut -c1-160)
+  local tmp="$REMOTE_UPDATE_STATUS.tmp.$$"
+  {
+    echo "schema=1"
+    echo "request_id=$request_id"
+    echo "target=$target"
+    echo "status=$status"
+    echo "updated_at=$(date +%s)"
+    echo "message=$message"
+  } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$REMOTE_UPDATE_STATUS"
+}
+
+# Shared Installer upgrade runtime. The remote bridge and manual 'txnode upgrade'
+# both delegate here so upgrade/rollback semantics have one owner.
+perform_docker_upgrade() {
+  UPGRADE_OUTCOME="failed"
+  local old_image_id
+  old_image_id=$(docker inspect -f '{{.Image}}' "$APP_NAME" 2>/dev/null || true)
+  [ -n "$old_image_id" ] || {
+    warn "无法读取当前容器镜像 ID"
+    return 1
+  }
+
+  info "当前镜像: $(docker inspect -f '{{.Config.Image}}' "$APP_NAME" 2>/dev/null || echo '-')"
+  info "拉取最新镜像..."
+  if ! dc pull; then
+    warn "镜像拉取失败，当前容器未改动"
+    return 1
+  fi
+
+  if ! reset_container; then
+    warn "清理旧容器失败，升级中止"
+    return 1
+  fi
+
+  info "安全重建容器..."
+  if guarded_compose_start 1; then
+    UPGRADE_OUTCOME="succeeded"
+    return 0
+  fi
+
+  warn "新镜像未通过稳定性/健康检查，尝试自动回滚"
+  if ! docker image inspect "$old_image_id" >/dev/null 2>&1; then
+    warn "旧镜像已不可用，无法自动回滚"
+    UPGRADE_OUTCOME="failed"
+    return 1
+  fi
+
+  # Re-tag only the previously running local image ID to the fixed official
+  # latest channel. No caller-controlled image reference reaches this code.
+  if ! docker tag "$old_image_id" "$REMOTE_UPDATE_IMAGE"; then
+    warn "恢复旧镜像标签失败"
+    UPGRADE_OUTCOME="failed"
+    return 1
+  fi
+
+  reset_container >/dev/null 2>&1 || true
+  if guarded_compose_start 1; then
+    UPGRADE_OUTCOME="rolled_back"
+    warn "升级失败，已自动回滚到之前运行的镜像"
+    return 1
+  fi
+
+  UPGRADE_OUTCOME="failed"
+  warn "升级与自动回滚均失败，需要人工处理"
+  return 1
+}
+
+do_remote_upgrade_apply() {
+  detect_deploy_mode
+
+  if ! parse_remote_update_request "$REMOTE_UPDATE_REQUEST"; then
+    warn "拒绝无效的 Runtime Update request"
+    return 1
+  fi
+
+  local request_id="$REMOTE_REQUEST_ID" target="$REMOTE_REQUEST_TARGET"
+  local previous_id previous_status
+  previous_id=$(remote_update_status_value request_id || true)
+  previous_status=$(remote_update_status_value status || true)
+  if [ "$previous_id" = "$request_id" ] && [[ "$previous_status" =~ ^(succeeded|rolled_back)$ ]]; then
+    info "Runtime Update request $request_id 已处理，跳过重复执行"
+    return 0
+  fi
+
+  if [ "$DEPLOY_MODE" != "docker" ]; then
+    write_remote_update_status "$request_id" "$target" "failed" "docker deployment required"
+    return 1
+  fi
+  if ! remote_update_compose_supported; then
+    write_remote_update_status "$request_id" "$target" "failed" "official latest channel required"
+    return 1
+  fi
+
+  write_remote_update_status "$request_id" "$target" "running" "upgrade started"
+
+  if perform_docker_upgrade; then
+    write_remote_update_status "$request_id" "$target" "succeeded" "upgrade completed"
+    return 0
+  fi
+
+  case "${UPGRADE_OUTCOME:-failed}" in
+    rolled_back)
+      write_remote_update_status "$request_id" "$target" "rolled_back" "upgrade failed and previous image restored"
+      ;;
+    *)
+      write_remote_update_status "$request_id" "$target" "failed" "upgrade failed"
+      ;;
+  esac
+  return 1
+}
+
+# ════════════════════════════════════════════════════════════════════
 #  动作：升级
 # ════════════════════════════════════════════════════════════════════
 do_upgrade() {
@@ -1678,22 +1995,17 @@ do_upgrade() {
 
   case "$DEPLOY_MODE" in
     docker)
-      info "当前镜像: $(docker inspect -f '{{.Config.Image}}' "$APP_NAME" 2>/dev/null || echo '-')"
-      info "拉取最新镜像..."
-      dc pull || fail "镜像拉取失败"
-
-      # 必须在 up 之前清掉旧容器：compose 只认得带自己 project 标签的容器，
-      # 手工 docker run 出来的同名容器会让 up 报 "container name is already in use"。
-      reset_container || fail "清理旧容器失败，升级中止（配置未改动）"
-
-      info "安全重建容器..."
-      if guarded_compose_start 1; then
+      ensure_remote_update_mount || warn "未能写入 Runtime Update 控制目录挂载"
+      if perform_docker_upgrade; then
         ok "升级完成，容器运行中（restart=unless-stopped）"
       else
-        warn "升级后的容器未能稳定运行，已关闭自动重启"
+        if [ "${UPGRADE_OUTCOME:-failed}" = "rolled_back" ]; then
+          fail "新版本启动失败，已自动回滚到升级前镜像"
+        fi
         show_logs 30
-        fail "升级后启动失败。修正后可重试: txnode upgrade"
+        fail "升级失败，请检查日志"
       fi
+      install_remote_update_bridge
       ;;
     legacy)
       warn "当前只有 install.sh 部署，txnode 自己的 docker 部署尚未安装"
@@ -1703,20 +2015,17 @@ do_upgrade() {
       ;;
   esac
 
-  # 回收旧镜像（dangling）
-  if [ "$DEPLOY_MODE" = "docker" ]; then
+  # Only prune dangling layers after a verified successful manual update.
+  if [ "$DEPLOY_MODE" = "docker" ] && [ "${UPGRADE_OUTCOME:-failed}" = "succeeded" ]; then
     local reclaimed
     reclaimed=$(docker image prune -f 2>/dev/null | tail -1 || true)
-    # 注意：这里必须用 if 而不是 `[ -n ... ] && hint`。
-    # 后者作为函数最后一条语句时，当 reclaimed 为空（无镜像可清，很常见）
-    # 整个 `[ -n ]` 求值为 false → 函数返回非 0 → set -e 让脚本直接 exit 1，
-    # 明明升级成功却报失败。
     if [ -n "$reclaimed" ]; then
       hint "镜像清理: $reclaimed"
     fi
   fi
   return 0
 }
+
 
 # 选一个可用的编辑器。
 # $EDITOR 在很多最小化镜像/容器里**未设置**，而本脚本开了 set -u，
@@ -3218,6 +3527,7 @@ main() {
     install)     do_install "$@" ;;
     migrate|import) do_migrate_legacy "$mig_dry" ;;
     upgrade)     do_upgrade ;;
+    remote-upgrade-apply) do_remote_upgrade_apply ;;
     status)      do_status ;;
     start)       do_start ;;
     stop)        do_stop ;;
