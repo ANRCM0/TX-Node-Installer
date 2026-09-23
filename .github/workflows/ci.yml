@@ -23,10 +23,13 @@ jobs:
           bash -n deploy.sh
           bash -n tests/install_args_test.sh
           bash -n tests/deploy_multi_instance_test.sh
+          bash -n tests/remote_update_bridge_test.sh
       - name: Test non-interactive install arguments
         run: bash tests/install_args_test.sh
       - name: Test multi-panel and isolated installer flows
         run: bash tests/deploy_multi_instance_test.sh
+      - name: Test bounded remote runtime update bridge
+        run: bash tests/remote_update_bridge_test.sh
       - name: Enforce public distribution boundary
         shell: bash
         run: |
