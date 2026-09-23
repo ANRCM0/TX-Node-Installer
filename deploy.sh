@@ -36,8 +36,8 @@ COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 CONFIG_FILE="$INSTALL_DIR/config.yml"
 # Canonical container config target. The legacy target is read only when
 # repairing already-generated Compose files during the compatibility window.
-CONTAINER_CONFIG_FILE="${TXNODE_CONTAINER_CONFIG_FILE:-/etc/txnode/config.yml}"
-LEGACY_CONTAINER_CONFIG_FILE="${TXNODE_LEGACY_CONTAINER_CONFIG_FILE:-/etc/xboard-node/config.yml}"
+CONTAINER_CONFIG_FILE="/etc/txnode/config.yml"
+LEGACY_CONTAINER_CONFIG_FILE="/etc/xboard-node/config.yml"
 BACKUP_DIR="$INSTALL_DIR/backups"
 IMAGE="${IMAGE:-ghcr.io/paimoncai/tx-node:latest}"
 CLI_LINK="${CLI_LINK:-/usr/local/bin/txnode}"
