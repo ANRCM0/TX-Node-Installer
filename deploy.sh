@@ -61,6 +61,7 @@ SERVICE_NAME="xboard-node.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 SB_BINARY="/usr/local/bin/xboard-node"
 XBCTL_PATH="/usr/local/bin/xbctl"
+XBCTL_COMPAT_PATH="${XBCTL_COMPAT_PATH:-/usr/bin/xbctl}"
 # 本脚本的持久化副本（快捷命令 txnode 应该指向这里，而不是 $SELF_PATH）
 SELF_COPY="$INSTALL_DIR/deploy.sh"
 # 网络兜底：$SELF_PATH 不可靠时从这里重新拉一份脚本
@@ -2055,9 +2056,8 @@ do_reconfigure() {
   detect_deploy_mode
   if [ "$DEPLOY_MODE" = "legacy" ]; then
     warn "当前只有 install.sh 部署，本脚本的配置向导只写 txnode 的 docker 布局"
-    hint "install.sh 部署请用: ${BOLD}xbctl bind add-node${NC} / ${BOLD}xbctl bind add-machine${NC} 增删节点"
-    hint "或直接编辑 $LEGACY_CONFIG_FILE 后 systemctl restart $SERVICE_NAME"
-    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+    hint "legacy 管理面已冻结，不再继续通过 xbctl 扩展或修改"
+    hint "请执行 txnode migrate（或菜单「从 install.sh 导入」）转成 Docker 部署后再修改"
     return 0
   fi
   if [ "$DEPLOY_MODE" = "none" ]; then
@@ -2859,10 +2859,9 @@ do_add_node() {
     warn "当前已启用 instances 多面板布局，请使用「添加面板 / 实例」。"
     return 0
   fi
-  if [ "$DEPLOY_MODE" = "legacy" ] && [ -x "$XBCTL_PATH" ]; then
-    warn "当前只有 install.sh 部署 —— 增删节点请用 xbctl（txnode 不管它）"
-    hint "命令示例: xbctl bind add-node --panel-url URL --token TOKEN --node-id ID"
-    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh legacy 部署；其管理面已冻结"
+    hint "请先执行 txnode migrate（或菜单「从 install.sh 导入」）迁移到 Docker，再管理节点"
     return 0
   fi
 
@@ -2959,7 +2958,8 @@ do_machine_mode() {
   case "$c" in
     1)
       [ "$DEPLOY_MODE" = "legacy" ] && {
-        warn "当前只有 install.sh 部署，请用: xbctl bind add-machine --panel-url URL --token TOKEN --machine-id ID"
+        warn "当前只有 install.sh legacy 部署；请先迁移到 txnode Docker 再切换 Machine mode"
+        hint "执行: txnode migrate"
         return 0
       }
       [ "$DEPLOY_MODE" = "docker" ] || { warn "txnode 尚未部署，请先安装或从 install.sh 导入"; return 0; }
@@ -3006,6 +3006,85 @@ EOF
 }
 
 # ════════════════════════════════════════════════════════════════════
+#  Legacy install.sh runtime cleanup
+#  This is the Installer-owned replacement for the retired xbctl uninstall
+#  path. It never touches the canonical Docker deployment under /etc/txnode.
+# ════════════════════════════════════════════════════════════════════
+do_legacy_cleanup() {
+  local purge=0 yes=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --purge) purge=1 ;;
+      --yes|-y) yes=1 ;;
+      *) fail "legacy-cleanup 不支持参数: $arg" ;;
+    esac
+  done
+
+  if ! detect_legacy_install; then
+    info "未检测到 install.sh / systemd legacy 部署，无需清理"
+    return 0
+  fi
+
+  title "清理 install.sh legacy runtime"
+  echo "  服务:     $SERVICE_NAME"
+  echo "  二进制:   $SB_BINARY"
+  echo "  旧命令:   $XBCTL_PATH"
+  echo "  配置目录: $LEGACY_INSTALL_ROOT"
+  if [ "$purge" = "1" ]; then
+    warn "将同时删除 legacy 配置目录；canonical /etc/txnode 不受影响"
+  else
+    hint "默认只删除 legacy runtime，保留 $LEGACY_INSTALL_ROOT 供审计/回滚"
+  fi
+
+  if [ "$yes" != "1" ]; then
+    if [ "$purge" = "1" ]; then
+      confirm_typed " " "LEGACY-PURGE" || { info "已取消"; return 0; }
+    else
+      confirm "确认删除 legacy systemd runtime？" "n" || { info "已取消"; return 0; }
+    fi
+  fi
+
+  local warnings=()
+
+  if [ -f "$SERVICE_PATH" ]; then
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if ! rm -f "$SERVICE_PATH"; then
+      warnings+=("remove service file: $SERVICE_PATH")
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  for legacy_bin in "$SB_BINARY" "$XBCTL_PATH" "$XBCTL_COMPAT_PATH"; do
+    if [ -e "$legacy_bin" ] || [ -L "$legacy_bin" ]; then
+      rm -f "$legacy_bin" || warnings+=("remove $legacy_bin")
+    fi
+  done
+
+  if [ "$purge" = "1" ]; then
+    rm -rf "$LEGACY_INSTALL_ROOT" || warnings+=("remove $LEGACY_INSTALL_ROOT")
+  fi
+
+  if [ -f "$SERVICE_PATH" ] || [ -x "$SB_BINARY" ] || [ -x "$XBCTL_PATH" ]; then
+    warnings+=("legacy runtime markers still detected")
+  fi
+
+  if [ "${#warnings[@]}" -gt 0 ]; then
+    warn "legacy cleanup 完成，但有以下残留："
+    local item
+    for item in "${warnings[@]}"; do
+      echo "  - $item"
+    done
+    return 1
+  fi
+
+  ok "legacy systemd runtime 已清理"
+  if [ "$purge" != "1" ] && [ -d "$LEGACY_INSTALL_ROOT" ]; then
+    hint "legacy 配置仍保留在 $LEGACY_INSTALL_ROOT"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════
 #  动作：卸载 / 彻底清除
 # ════════════════════════════════════════════════════════════════════
 do_uninstall() {
@@ -3027,7 +3106,7 @@ do_uninstall() {
     legacy)
       warn "检测到 install.sh 部署（${SERVICE_NAME}）"
       hint "txnode 的卸载不会动它 —— 它有自己的卸载入口"
-      hint "若你想连同它一起清掉，请单独执行: xbctl uninstall [--purge]"
+      hint "如需清理 legacy runtime，请执行: txnode legacy-cleanup [--purge]"
       ;;
   esac
 
@@ -3059,7 +3138,7 @@ do_purge() {
       ;;
     legacy)
       warn "检测到 install.sh 部署 —— txnode 的 purge 不会删除它"
-      hint "如需清理 install.sh 部署，请单独执行: xbctl uninstall --purge"
+      hint "如需清理 install.sh legacy 部署，请执行: txnode legacy-cleanup --purge"
       ;;
   esac
 
@@ -3411,6 +3490,9 @@ usage() {
     migrate        从 install.sh 部署导入配置并转成 docker 部署
     migrate --dry-run
                    只预览将要生成的配置，不写入任何文件
+    legacy-cleanup 删除旧 install.sh/systemd runtime，默认保留旧配置
+      [--purge] [--yes]
+                   --purge 同时删除 /etc/xboard-node；不会删除 /etc/txnode
     upgrade        升级到最新镜像并重建
     status         查看运行状态与配置摘要
     start          启动
@@ -3526,6 +3608,7 @@ main() {
   case "$action" in
     install)     do_install "$@" ;;
     migrate|import) do_migrate_legacy "$mig_dry" ;;
+    legacy-cleanup) do_legacy_cleanup "$@" ;;
     upgrade)     do_upgrade ;;
     remote-upgrade-apply) do_remote_upgrade_apply ;;
     status)      do_status ;;

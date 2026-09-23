@@ -111,7 +111,24 @@ The installer repository must not contain TX-Node application source, private cr
 
 ## Legacy systemd installer
 
-The public deployment path is the Docker-based `deploy.sh` above. The historical `install.sh` / direct binary-release path is not distributed from this repository; existing legacy installations can be imported by `deploy.sh migrate`.
+The public deployment path is the Docker-based `deploy.sh` above. The historical `install.sh` / direct binary-release path is frozen and is no longer a feature-development target.
+
+Existing legacy installations can be imported into the canonical Docker deployment:
+
+```bash
+txnode migrate
+```
+
+After migration and verification, the Installer also owns cleanup of the old host runtime:
+
+```bash
+txnode legacy-cleanup
+txnode legacy-cleanup --purge
+```
+
+The default cleanup removes the historical `xboard-node.service`, `xboard-node` binary and `xbctl` command while preserving `/etc/xboard-node` as a rollback/audit source. `--purge` removes that preserved legacy directory as well. Neither form deletes the canonical `/etc/txnode` deployment.
+
+This keeps migration/cleanup authority in the Installer instead of requiring future TX-Node releases to keep shipping the old `xbctl` host-management runtime.
 
 ## License
 
