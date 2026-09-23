@@ -32,6 +32,34 @@ After installation, use:
 txnode
 ```
 
+
+## TXBoard remote runtime update
+
+Docker deployments installed by the current Installer can expose the bounded **Machine Runtime Update v1** bridge used by TXBoard.
+
+The bridge keeps deployment authority on the host:
+
+```text
+TXBoard
+  -> typed Machine update request (latest only)
+  -> TX-Node
+  -> /run/txnode-update request file
+  -> host systemd.path/service
+  -> this Installer's existing upgrade runtime
+```
+
+The TX-Node container does **not** receive the Docker socket and TXBoard does not receive SSH or shell access. The bridge accepts only the fixed `latest` target for the official `ghcr.io/paimoncai/tx-node:latest` deployment.
+
+Manual upgrades remain supported:
+
+```bash
+txnode upgrade
+```
+
+Both manual and remote upgrades use the same Installer-owned upgrade implementation. The remote path keeps the previous image until the new runtime passes stability/health checks and attempts an automatic rollback when verification fails.
+
+Older installs remain compatible; if the bridge is unavailable, TXBoard should show remote update as unsupported and the operator can continue using `txnode upgrade`.
+
 The runtime image defaults to:
 
 ```text
