@@ -3527,6 +3527,7 @@ main() {
     install)     do_install "$@" ;;
     migrate|import) do_migrate_legacy "$mig_dry" ;;
     upgrade)     do_upgrade ;;
+    remote-upgrade-apply) do_remote_upgrade_apply ;;
     status)      do_status ;;
     start)       do_start ;;
     stop)        do_stop ;;
