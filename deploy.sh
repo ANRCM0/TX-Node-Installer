@@ -18,7 +18,7 @@
 #   bash deploy.sh help
 #
 # 一键在线执行:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh)
 set -euo pipefail
 
 # ════════════════════════════════════════════════════════════════════
@@ -71,7 +71,7 @@ SELF_COPY="$INSTALL_DIR/deploy.sh"
 # 网络兜底：$SELF_PATH 不可靠时从这里重新拉一份脚本
 # 公开安装脚本分发仓库。生产机器只从这里获取 deploy.sh，
 # 运行时镜像则从公开 GHCR 拉取，因此不依赖 TX-Node 源码仓库可见性。
-TXNODE_INSTALLER_REPO="${TXNODE_INSTALLER_REPO:-PaiMonCai/TX-Node-Installer}"
+TXNODE_INSTALLER_REPO="${TXNODE_INSTALLER_REPO:-ANRCM0/TX-Node-Installer}"
 SCRIPT_RAW_URL="${SCRIPT_RAW_URL:-https://raw.githubusercontent.com/${TXNODE_INSTALLER_REPO}/main/deploy.sh}"
 
 # Machine Runtime Update v1 bridge. TX-Node receives a typed control-plane
@@ -3167,7 +3167,7 @@ do_purge() {
 
   echo
   ok "彻底清除完成，系统已恢复干净状态"
-  hint "如需重新部署: bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh)"
+  hint "如需重新部署: bash <(curl -fsSL https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh)"
 }
 
 # ════════════════════════════════════════════════════════════════════

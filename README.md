@@ -9,13 +9,13 @@ This repository intentionally contains only deployment/bootstrap material. The T
 Interactive install:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh)
 ```
 
 Non-interactive machine install (used by TXBoard):
 
 ```bash
-curl -fsSL 'https://raw.githubusercontent.com/PaiMonCai/TX-Node-Installer/main/deploy.sh' \
+curl -fsSL 'https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh' \
   | sudo bash -s -- install --mode machine \
       --panel-url 'https://panel.example.com' \
       --machine-id 12 \
