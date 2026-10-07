@@ -36,7 +36,7 @@ bash -c '
   grep -Fxq "  type: \"singbox\"" "$CONFIG_FILE"
   grep -Fxq "  enabled: false" "$CONFIG_FILE"
 
-  grep -Fxq "    image: ghcr.io/paimoncai/tx-node:latest" "$COMPOSE_FILE"
+  grep -Fxq "    image: ghcr.io/ANRCM0/tx-node:latest" "$COMPOSE_FILE"
   grep -Fxq "    network_mode: host" "$COMPOSE_FILE"
   grep -Fxq "    command: [\"-c\", \"/etc/txnode/config.yml\"]" "$COMPOSE_FILE"
   grep -Fxq "      - $CONFIG_FILE:/etc/txnode/config.yml:ro" "$COMPOSE_FILE"
