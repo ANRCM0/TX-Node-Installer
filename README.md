@@ -48,7 +48,7 @@ TXBoard
   -> this Installer's existing upgrade runtime
 ```
 
-The TX-Node container does **not** receive the Docker socket and TXBoard does not receive SSH or shell access. The bridge accepts only the fixed `latest` target for the official `ghcr.io/ANRCM0/tx-node:latest` deployment.
+The TX-Node container does **not** receive the Docker socket and TXBoard does not receive SSH or shell access. The bridge accepts only the fixed `latest` target for the official `ghcr.io/anrcm0/tx-node:latest` deployment.
 
 Manual upgrades remain supported:
 
@@ -63,7 +63,7 @@ Older installs remain compatible; if the bridge is unavailable, TXBoard should s
 The runtime image defaults to:
 
 ```text
-ghcr.io/ANRCM0/tx-node:latest
+ghcr.io/anrcm0/tx-node:latest
 ```
 
 ### Container config path
@@ -114,7 +114,7 @@ TX-Node source repository
         |
         | GitHub Actions / image publishing
         v
-ghcr.io/ANRCM0/tx-node (public)
+ghcr.io/anrcm0/tx-node (public)
         ^
         | docker pull / upgrade
         |
