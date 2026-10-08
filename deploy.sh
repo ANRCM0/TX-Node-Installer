@@ -39,7 +39,7 @@ CONFIG_FILE="$INSTALL_DIR/config.yml"
 CONTAINER_CONFIG_FILE="/etc/txnode/config.yml"
 LEGACY_CONTAINER_CONFIG_FILE="/etc/xboard-node/config.yml"
 BACKUP_DIR="$INSTALL_DIR/backups"
-IMAGE="${IMAGE:-ghcr.io/ANRCM0/tx-node:latest}"
+IMAGE="${IMAGE:-ghcr.io/anrcm0/tx-node:latest}"
 CLI_LINK="${CLI_LINK:-/usr/local/bin/txnode}"
 TXNODE_HEALTH_PORT="${TXNODE_HEALTH_PORT:-}"
 ISOLATED_ROOT_BASE="${TXNODE_ISOLATED_ROOT_BASE:-/etc/txnode}"
@@ -83,7 +83,7 @@ REMOTE_UPDATE_REQUEST="$REMOTE_UPDATE_DIR/request.env"
 REMOTE_UPDATE_STATUS="$REMOTE_UPDATE_DIR/status.env"
 REMOTE_UPDATE_CAPABILITIES="$REMOTE_UPDATE_DIR/capabilities.env"
 REMOTE_UPDATE_CONTAINER_DIR="/run/txnode-update"
-REMOTE_UPDATE_IMAGE="ghcr.io/ANRCM0/tx-node:latest"
+REMOTE_UPDATE_IMAGE="ghcr.io/anrcm0/tx-node:latest"
 
 
 # 运行模式：docker | legacy | none，由 detect_deploy_mode 填充
@@ -1470,7 +1470,7 @@ do_status() {
       echo "  启动于:   $started"
       # 容器内版本
       local ver
-      ver=$(docker exec "$APP_NAME" /usr/local/bin/xboard-node -v 2>/dev/null || echo "unknown")
+      ver=$(docker exec "$APP_NAME" /usr/local/bin/tx-node -v 2>/dev/null || docker exec "$APP_NAME" /usr/local/bin/xboard-node -v 2>/dev/null || echo "unknown")
       echo "  版本:     $ver"
       ;;
     legacy)
