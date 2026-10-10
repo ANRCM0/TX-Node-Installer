@@ -42,6 +42,15 @@ jobs:
           printf 'canonical-mount-ok\n' > "$cfg"
           output="$(docker run --rm -v "$cfg:/etc/txnode/config.yml:ro" txnode-legacy-layout-smoke cat /etc/txnode/config.yml)"
           test "$output" = "canonical-mount-ok"
+          data_dir="$(mktemp -d)"
+          docker run --rm -v "$data_dir:/etc/txnode" -v "$cfg:/etc/txnode/config.yml:ro" \
+            txnode-legacy-layout-smoke sh -c 'cat /etc/txnode/config.yml; printf "pending-batch\\n" > /etc/txnode/.traffic.pending.json' \
+            | grep -q "canonical-mount-ok"
+          test "$(cat "$data_dir/.traffic.pending.json")" = "pending-batch"
+          # A recreated container must see pending traffic even though the YAML stays read-only.
+          output="$(docker run --rm -v "$data_dir:/etc/txnode" -v "$cfg:/etc/txnode/config.yml:ro" \
+            txnode-legacy-layout-smoke cat /etc/txnode/.traffic.pending.json)"
+          test "$output" = "pending-batch"
       - name: Test multi-panel and isolated installer flows
         run: bash tests/deploy_multi_instance_test.sh
       - name: Test bounded remote runtime update bridge
