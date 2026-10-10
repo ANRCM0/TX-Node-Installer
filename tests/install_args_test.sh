@@ -42,7 +42,9 @@ bash -c '
   grep -Fxq "    image: ghcr.io/anrcm0/tx-node:latest" "$COMPOSE_FILE"
   grep -Fxq "    network_mode: host" "$COMPOSE_FILE"
   grep -Fxq "    command: [\"-c\", \"/etc/txnode/config.yml\"]" "$COMPOSE_FILE"
+  grep -Fxq "      - $INSTALL_DIR/data:/etc/txnode" "$COMPOSE_FILE"
   grep -Fxq "      - $CONFIG_FILE:/etc/txnode/config.yml:ro" "$COMPOSE_FILE"
+  [ -d "$INSTALL_DIR/data" ]
   if grep -Fq "$CONFIG_FILE:/etc/xboard-node/config.yml:ro" "$COMPOSE_FILE"; then
     echo "new install still writes the legacy container config target" >&2
     exit 1
