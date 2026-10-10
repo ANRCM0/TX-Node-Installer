@@ -133,5 +133,7 @@ AUDIT_ENABLED="false"
 REPORT_ALL="false"
 write_config_files >/dev/null
 assert_contains "$(cat "$CONFIG_FILE")" "health_port: 65539"
+assert_contains "$(cat "$COMPOSE_FILE")" "$INSTALL_DIR/data:/etc/txnode"
+[ -d "$INSTALL_DIR/data" ]
 
 echo "deploy multi-instance tests: OK"
