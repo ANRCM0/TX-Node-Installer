@@ -37,6 +37,11 @@ EOF
 echo "[test] official latest compose is eligible"
 remote_update_compose_supported
 
+echo "[test] development channel is eligible for the remote bridge"
+set_compose_channel dev
+remote_update_compose_supported
+set_compose_channel stable
+
 echo "[test] control mount is added exactly once"
 ensure_remote_update_mount
 ensure_remote_update_mount
@@ -60,7 +65,7 @@ echo "[test] capability marker is bounded"
 write_remote_update_capability
 grep -qx 'schema=1' "$REMOTE_UPDATE_CAPABILITIES"
 grep -qx 'updater_available=true' "$REMOTE_UPDATE_CAPABILITIES"
-grep -qx 'target=latest' "$REMOTE_UPDATE_CAPABILITIES"
+grep -qx 'target=latest,dev' "$REMOTE_UPDATE_CAPABILITIES"
 
 echo "[test] valid latest request parses"
 cat > "$REMOTE_UPDATE_REQUEST" <<'EOF'
@@ -71,6 +76,11 @@ EOF
 parse_remote_update_request "$REMOTE_UPDATE_REQUEST"
 [ "$REMOTE_REQUEST_ID" = "mup_test-01" ]
 [ "$REMOTE_REQUEST_TARGET" = "latest" ]
+
+echo "[test] dev update target is accepted"
+sed -i 's/^target=latest$/target=dev/' "$REMOTE_UPDATE_REQUEST"
+parse_remote_update_request "$REMOTE_UPDATE_REQUEST"
+[ "$REMOTE_REQUEST_TARGET" = "dev" ]
 
 echo "[test] arbitrary image/version target is rejected"
 cat > "$REMOTE_UPDATE_REQUEST" <<'EOF'
