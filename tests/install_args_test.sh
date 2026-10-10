@@ -14,6 +14,7 @@ bash -c '
 
   parse_install_args \
     --mode machine \
+    --provider txboard \
     --panel-url "https://panel.example.com/" \
     --machine-id 42 \
     --token "machine-token-123" \
@@ -22,6 +23,7 @@ bash -c '
 
   [ "$NONINTERACTIVE_INSTALL" = "1" ]
   [ "$MODE_STR" = "machine" ]
+  [ "$PANEL_PROVIDER" = "txboard" ]
   [ "$PANEL_URL" = "https://panel.example.com" ]
   [ "$MACHINE_ID" = "42" ]
   [ "$MACHINE_TOKEN" = "machine-token-123" ]
@@ -30,6 +32,7 @@ bash -c '
   write_config_files
 
   grep -Fxq "  url: \"https://panel.example.com\"" "$CONFIG_FILE"
+  grep -Fxq '  provider: "txboard"' "$CONFIG_FILE"
   grep -Fxq "machine:" "$CONFIG_FILE"
   grep -Fxq "  machine_id: 42" "$CONFIG_FILE"
   grep -Fxq "  token: \"machine-token-123\"" "$CONFIG_FILE"
