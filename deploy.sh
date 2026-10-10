@@ -39,6 +39,9 @@ CONFIG_FILE="$INSTALL_DIR/config.yml"
 CONTAINER_CONFIG_FILE="/etc/txnode/config.yml"
 LEGACY_CONTAINER_CONFIG_FILE="/etc/xboard-node/config.yml"
 BACKUP_DIR="$INSTALL_DIR/backups"
+# Persist default kernel.config_dir (/etc/txnode) independently of the read-only YAML mount.
+DATA_DIR="$INSTALL_DIR/data"
+DATA_CONTAINER_DIR="/etc/txnode"
 IMAGE="${IMAGE:-ghcr.io/anrcm0/tx-node:latest}"
 CLI_LINK="${CLI_LINK:-/usr/local/bin/txnode}"
 TXNODE_HEALTH_PORT="${TXNODE_HEALTH_PORT:-}"
@@ -857,7 +860,9 @@ EOF
     return 1
   fi
 
-  mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$REMOTE_UPDATE_DIR"
+  DATA_DIR="$INSTALL_DIR/data"
+  mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$REMOTE_UPDATE_DIR" "$DATA_DIR"
+  chmod 700 "$DATA_DIR" 2>/dev/null || true
   chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
   # 源配置快照：即使后面失败，也能从这里回滚
   local src_backup="$BACKUP_DIR/legacy-source.$(date +%Y%m%d-%H%M%S)"
@@ -883,6 +888,9 @@ services:
     network_mode: host
     command: ["-c", "$CONTAINER_CONFIG_FILE"]
     volumes:
+      # Default kernel.config_dir is the directory containing config.yml.
+      # Persist traffic pending spool, generated certificates and kernel cache.
+      - $DATA_DIR:$DATA_CONTAINER_DIR
       - $CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro
       - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF
@@ -1196,7 +1204,9 @@ read_panel_credentials() {
 }
 
 write_config_files() {
-  mkdir -p "$INSTALL_DIR" "$REMOTE_UPDATE_DIR"
+  DATA_DIR="$INSTALL_DIR/data"
+  mkdir -p "$INSTALL_DIR" "$REMOTE_UPDATE_DIR" "$DATA_DIR"
+  chmod 700 "$DATA_DIR" 2>/dev/null || true
   chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
 
   if [ "$MODE_STR" = "machine" ]; then
@@ -1254,6 +1264,9 @@ services:
     network_mode: host
     command: ["-c", "$CONTAINER_CONFIG_FILE"]
     volumes:
+      # Default kernel.config_dir is the directory containing config.yml.
+      # Persist traffic pending spool, generated certificates and kernel cache.
+      - $DATA_DIR:$DATA_CONTAINER_DIR
       - $CONFIG_FILE:$CONTAINER_CONFIG_FILE:ro
       - $REMOTE_UPDATE_DIR:$REMOTE_UPDATE_CONTAINER_DIR
 EOF

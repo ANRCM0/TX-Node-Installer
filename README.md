@@ -66,6 +66,13 @@ The runtime image defaults to:
 ghcr.io/anrcm0/tx-node:latest
 ```
 
+
+### Durable runtime data (S8)
+
+New generated Compose layouts mount `$INSTALL_DIR/data` on `/etc/txnode` **before** overlaying the read-only `config.yml`. TX-Node defaults `kernel.config_dir` to that directory (or a per-instance/per-node child), so pending traffic batches, certificates and kernel state now survive Docker container recreation. Keep this directory on reliable persistent storage, writable by the runtime, and include it in backups.
+
+**Existing deployments:** older Compose files that mount only `config.yml` and the update bridge do *not* become durable simply by upgrading this Installer. Before replacing an old container, stop it and migrate the data under its `/etc/txnode` (including hidden `.txnode-traffic-*.pending.json` files) to the new host `$INSTALL_DIR/data`, then add the directory mount ahead of the config-file mount. Check ownership and restore the previous Compose/container if health checks fail. Never overlay the old writable container layer with an empty host directory before preserving any pending traffic. Validate `txnode doctor` and reconcile pending batches against TXBoard's traffic ledger before considering the migration complete.
+
 ### Container config path
 
 The canonical host and container config path is now:
