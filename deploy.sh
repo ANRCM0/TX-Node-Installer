@@ -86,7 +86,7 @@ REMOTE_UPDATE_REQUEST="$REMOTE_UPDATE_DIR/request.env"
 REMOTE_UPDATE_STATUS="$REMOTE_UPDATE_DIR/status.env"
 REMOTE_UPDATE_CAPABILITIES="$REMOTE_UPDATE_DIR/capabilities.env"
 REMOTE_UPDATE_CONTAINER_DIR="/run/txnode-update"
-REMOTE_UPDATE_IMAGE="ghcr.io/anrcm0/tx-node:latest"
+REMOTE_UPDATE_IMAGE_PREFIX="ghcr.io/anrcm0/tx-node"
 
 
 # 运行模式：docker | legacy | none，由 detect_deploy_mode 填充
@@ -1056,6 +1056,7 @@ ensure_docker() {
 # 支持 machine / node 两种模式；未传任何参数时仍走原交互向导。
 parse_install_args() {
   PANEL_PROVIDER="xboard"
+  INSTALL_CHANNEL="stable"
   MODE_STR=""
   PANEL_URL=""
   MACHINE_ID=""
@@ -1072,6 +1073,9 @@ parse_install_args() {
       --mode)
         [ "$#" -ge 2 ] || fail "--mode 缺少参数"
         MODE_STR="$2"; shift 2 ;;
+      --channel)
+        [ "$#" -ge 2 ] || fail "--channel 缺少参数"
+        INSTALL_CHANNEL="$2"; shift 2 ;;
       --provider)
         [ "$#" -ge 2 ] || fail "--provider 缺少参数"
         PANEL_PROVIDER="$2"; shift 2 ;;
@@ -1110,6 +1114,8 @@ parse_install_args() {
   [[ "$PANEL_URL" =~ ^https?:// ]] || fail "--panel-url 必须以 http:// 或 https:// 开头"
   [[ "$MODE_STR" =~ ^(machine|node)$ ]] || fail "--mode 只支持 machine 或 node"
   [[ "$PANEL_PROVIDER" =~ ^(xboard|txboard)$ ]] || fail "--provider 只支持 xboard 或 txboard"
+  [[ "$INSTALL_CHANNEL" =~ ^(stable|dev)$ ]] || fail "--channel 只支持 stable 或 dev"
+  IMAGE="$(official_image_for_channel "$INSTALL_CHANNEL")"
   [[ "$KERNEL" =~ ^(singbox|xray)$ ]] || fail "--kernel 只支持 singbox 或 xray"
   [[ "$LOG_LEVEL" =~ ^(info|debug|warn|error)$ ]] || fail "--log-level 只支持 info/debug/warn/error"
   [[ "$AUDIT_ENABLED" =~ ^(true|false)$ ]] || fail "--audit 只支持 true/false"
@@ -1141,6 +1147,7 @@ parse_install_args() {
 
 read_panel_credentials() {
   PANEL_PROVIDER="xboard"
+  INSTALL_CHANNEL="stable"
   echo
   info "配置向导（面板信息可在 Xboard 后台查到）"
   hint "面板地址示例：https://panel.example.com"
@@ -1298,6 +1305,14 @@ do_install() {
 
   if [ "${NONINTERACTIVE_INSTALL:-0}" != "1" ]; then
     read_panel_credentials
+  fi
+
+  if [ "${NONINTERACTIVE_INSTALL:-0}" != "1" ]; then
+    local input_channel=""
+    read -r -p "镜像渠道 stable(稳定版)/dev(开发版) [stable]: " input_channel || fail "输入中断，已取消"
+    INSTALL_CHANNEL="${input_channel:-stable}"
+    [[ "$INSTALL_CHANNEL" =~ ^(stable|dev)$ ]] || fail "只支持 stable/dev"
+    IMAGE="$(official_image_for_channel "$INSTALL_CHANNEL")"
   fi
 
   backup_config
@@ -1738,11 +1753,38 @@ remote_update_host_supported() {
   command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
-remote_update_compose_supported() {
+official_image_for_channel() {
+  case "$1" in
+    stable|latest) printf '%s:latest\n' "$REMOTE_UPDATE_IMAGE_PREFIX" ;;
+    dev) printf '%s:dev\n' "$REMOTE_UPDATE_IMAGE_PREFIX" ;;
+    *) return 1 ;;
+  esac
+}
+current_compose_image() {
   [ -f "$COMPOSE_FILE" ] || return 1
-  local configured
-  configured=$(awk '/^[[:space:]]*image:[[:space:]]*/ {print $2; exit}' "$COMPOSE_FILE" 2>/dev/null || true)
-  [ "$configured" = "$REMOTE_UPDATE_IMAGE" ]
+  awk '/^[[:space:]]*image:[[:space:]]*/ {print $2; exit}' "$COMPOSE_FILE"
+}
+current_compose_channel() {
+  local current
+  current="$(current_compose_image)" || return 1
+  case "$current" in
+    "$REMOTE_UPDATE_IMAGE_PREFIX:latest") echo stable ;;
+    "$REMOTE_UPDATE_IMAGE_PREFIX:dev") echo dev ;;
+    *) return 1 ;;
+  esac
+}
+remote_update_compose_supported() { current_compose_channel >/dev/null 2>&1; }
+set_compose_channel() {
+  local image tmp
+  image="$(official_image_for_channel "$1")" || return 1
+  remote_update_compose_supported || return 1
+  tmp="$COMPOSE_FILE.channel.$"
+  awk -v image="$image" '
+    /^[[:space:]]*image:[[:space:]]*/ {sub(/image:[[:space:]]*[^[:space:]]+/, "image: " image); n++}
+    {print}
+    END {if (n != 1) exit 42}
+  ' "$COMPOSE_FILE" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$COMPOSE_FILE"
 }
 
 ensure_remote_update_mount() {
@@ -1777,7 +1819,7 @@ write_remote_update_capability() {
   {
     echo "schema=1"
     echo "updater_available=true"
-    echo "target=latest"
+    echo "target=latest,dev"
   } > "$tmp"
   chmod 600 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$REMOTE_UPDATE_CAPABILITIES"
@@ -1795,7 +1837,7 @@ install_remote_update_bridge() {
     return 0
   fi
   if ! remote_update_compose_supported; then
-    hint "当前 compose 不是官方 latest 镜像，远程 Runtime Update bridge 保持关闭"
+    hint "当前 compose 不是官方 stable/dev 镜像，远程 Runtime Update bridge 保持关闭"
     return 0
   fi
   if ! ensure_remote_update_mount; then
@@ -1826,7 +1868,7 @@ Type=oneshot
 Environment="APP_NAME=$APP_NAME"
 Environment="INSTALL_DIR=$INSTALL_DIR"
 Environment="CLI_LINK=$CLI_LINK"
-Environment="IMAGE=$REMOTE_UPDATE_IMAGE"
+Environment="IMAGE=$(current_compose_image)"
 Environment="REMOTE_UPDATE_DIR=$REMOTE_UPDATE_DIR"
 ExecStart=/bin/bash $SELF_COPY remote-upgrade-apply
 TimeoutStartSec=600
@@ -1882,7 +1924,1800 @@ parse_remote_update_request() {
   [ "$(grep -c '^request_id=' "$file" 2>/dev/null || true)" = "1" ] || return 1
   [ "$(grep -c '^target=' "$file" 2>/dev/null || true)" = "1" ] || return 1
 
-  if grep -Ev '^(schema=1|request_id=[A-Za-z0-9._:-]{1,64}|target=latest|[[:space:]]*)$' "$file" >/dev/null 2>&1; then
+  if grep -Ev '^(schema=1|request_id=[A-Za-z0-9._:-]{1,64}|target=(latest|dev)|[[:space:]]*) "$file" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local schema
+  schema=$(sed -n 's/^schema=//p' "$file" | head -n1)
+  REMOTE_REQUEST_ID=$(sed -n 's/^request_id=//p' "$file" | head -n1)
+  REMOTE_REQUEST_TARGET=$(sed -n 's/^target=//p' "$file" | head -n1)
+
+  [ "$schema" = "1" ] || return 1
+  [[ "$REMOTE_REQUEST_ID" =~ ^[A-Za-z0-9._:-]{1,64}$ ]] || return 1
+  [[ "$REMOTE_REQUEST_TARGET" =~ ^(latest|dev)$ ]] || return 1
+  return 0
+}
+
+remote_update_status_value() {
+  local key="$1"
+  [ -f "$REMOTE_UPDATE_STATUS" ] || return 0
+  sed -n "s/^$key=//p" "$REMOTE_UPDATE_STATUS" 2>/dev/null | head -n1
+}
+
+write_remote_update_status() {
+  local request_id="$1" target="$2" status="$3" message="${4:-}"
+  mkdir -p "$REMOTE_UPDATE_DIR"
+  message=$(printf '%s' "$message" | tr '\r\n=' '   ' | cut -c1-160)
+  local tmp="$REMOTE_UPDATE_STATUS.tmp.$$"
+  {
+    echo "schema=1"
+    echo "request_id=$request_id"
+    echo "target=$target"
+    echo "status=$status"
+    echo "updated_at=$(date +%s)"
+    echo "message=$message"
+  } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$REMOTE_UPDATE_STATUS"
+}
+
+# Shared Installer upgrade runtime. The remote bridge and manual 'txnode upgrade'
+# both delegate here so upgrade/rollback semantics have one owner.
+perform_docker_upgrade() {
+  UPGRADE_OUTCOME="failed"
+  local old_image_id
+  old_image_id=$(docker inspect -f '{{.Image}}' "$APP_NAME" 2>/dev/null || true)
+  [ -n "$old_image_id" ] || {
+    warn "无法读取当前容器镜像 ID"
+    return 1
+  }
+
+  info "当前镜像: $(docker inspect -f '{{.Config.Image}}' "$APP_NAME" 2>/dev/null || echo '-')"
+  info "拉取最新镜像..."
+  if ! dc pull; then
+    warn "镜像拉取失败，当前容器未改动"
+    return 1
+  fi
+
+  if ! reset_container; then
+    warn "清理旧容器失败，升级中止"
+    return 1
+  fi
+
+  info "安全重建容器..."
+  if guarded_compose_start 1; then
+    UPGRADE_OUTCOME="succeeded"
+    return 0
+  fi
+
+  warn "新镜像未通过稳定性/健康检查，尝试自动回滚"
+  if ! docker image inspect "$old_image_id" >/dev/null 2>&1; then
+    warn "旧镜像已不可用，无法自动回滚"
+    UPGRADE_OUTCOME="failed"
+    return 1
+  fi
+
+  # Re-tag only the previously running local image ID to the fixed official
+  # latest channel. No caller-controlled image reference reaches this code.
+  if ! docker tag "$old_image_id" "$REMOTE_UPDATE_IMAGE"; then
+    warn "恢复旧镜像标签失败"
+    UPGRADE_OUTCOME="failed"
+    return 1
+  fi
+
+  reset_container >/dev/null 2>&1 || true
+  if guarded_compose_start 1; then
+    UPGRADE_OUTCOME="rolled_back"
+    warn "升级失败，已自动回滚到之前运行的镜像"
+    return 1
+  fi
+
+  UPGRADE_OUTCOME="failed"
+  warn "升级与自动回滚均失败，需要人工处理"
+  return 1
+}
+
+do_remote_upgrade_apply() {
+  detect_deploy_mode
+
+  if ! parse_remote_update_request "$REMOTE_UPDATE_REQUEST"; then
+    warn "拒绝无效的 Runtime Update request"
+    return 1
+  fi
+
+  local request_id="$REMOTE_REQUEST_ID" target="$REMOTE_REQUEST_TARGET"
+  local previous_id previous_status
+  previous_id=$(remote_update_status_value request_id || true)
+  previous_status=$(remote_update_status_value status || true)
+  if [ "$previous_id" = "$request_id" ] && [[ "$previous_status" =~ ^(succeeded|rolled_back)$ ]]; then
+    info "Runtime Update request $request_id 已处理，跳过重复执行"
+    return 0
+  fi
+
+  if [ "$DEPLOY_MODE" != "docker" ]; then
+    write_remote_update_status "$request_id" "$target" "failed" "docker deployment required"
+    return 1
+  fi
+  if ! remote_update_compose_supported; then
+    write_remote_update_status "$request_id" "$target" "failed" "official stable/dev channel required"
+    return 1
+  fi
+
+  write_remote_update_status "$request_id" "$target" "running" "upgrade started"
+
+  if perform_docker_upgrade "$target"; then
+    write_remote_update_status "$request_id" "$target" "succeeded" "upgrade completed"
+    return 0
+  fi
+
+  case "${UPGRADE_OUTCOME:-failed}" in
+    rolled_back)
+      write_remote_update_status "$request_id" "$target" "rolled_back" "upgrade failed and previous image restored"
+      ;;
+    *)
+      write_remote_update_status "$request_id" "$target" "failed" "upgrade failed"
+      ;;
+  esac
+  return 1
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：升级
+# ════════════════════════════════════════════════════════════════════
+do_upgrade() {
+  detect_deploy_mode
+  ! is_installed && fail "未检测到已部署的 tx-node，请先安装"
+
+  case "$DEPLOY_MODE" in
+    docker)
+      ensure_remote_update_mount || warn "未能写入 Runtime Update 控制目录挂载"
+      if perform_docker_upgrade; then
+        ok "升级完成，容器运行中（restart=unless-stopped）"
+      else
+        if [ "${UPGRADE_OUTCOME:-failed}" = "rolled_back" ]; then
+          fail "新版本启动失败，已自动回滚到升级前镜像"
+        fi
+        show_logs 30
+        fail "升级失败，请检查日志"
+      fi
+      install_remote_update_bridge
+      ;;
+    legacy)
+      warn "当前只有 install.sh 部署，txnode 自己的 docker 部署尚未安装"
+      hint "txnode 不会去升级 install.sh 的部署（那是它自己的 ${XBCTL_PATH} 的职责）"
+      hint "如果你想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+      return 0
+      ;;
+  esac
+
+  # Only prune dangling layers after a verified successful manual update.
+  if [ "$DEPLOY_MODE" = "docker" ] && [ "${UPGRADE_OUTCOME:-failed}" = "succeeded" ]; then
+    local reclaimed
+    reclaimed=$(docker image prune -f 2>/dev/null | tail -1 || true)
+    if [ -n "$reclaimed" ]; then
+      hint "镜像清理: $reclaimed"
+    fi
+  fi
+  return 0
+}
+
+
+# 选一个可用的编辑器。
+# $EDITOR 在很多最小化镜像/容器里**未设置**，而本脚本开了 set -u，
+# 直接 "$EDITOR" 会 unbound variable 让菜单崩掉 —— 所以一律走这里拿默认值。
+pick_editor() {
+  local ed="${EDITOR:-}"
+  [ -n "$ed" ] || ed="${VISUAL:-}"
+  if [ -z "$ed" ]; then
+    for c in nano vim vi; do
+      if command -v "$c" >/dev/null 2>&1; then ed="$c"; break; fi
+    done
+  fi
+  # 选中的编辑器不存在（比如 $EDITOR 指向没装的 emacs）→ 退回第一个可用的
+  if [ -n "$ed" ] && ! command -v "$ed" >/dev/null 2>&1; then
+    ed=""
+    for c in nano vim vi; do
+      if command -v "$c" >/dev/null 2>&1; then ed="$c"; break; fi
+    done
+  fi
+  printf '%s' "${ed:-vi}"
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：改配置
+# ════════════════════════════════════════════════════════════════════
+do_reconfigure() {
+  detect_deploy_mode
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh 部署，本脚本的配置向导只写 txnode 的 docker 布局"
+    hint "legacy 管理面已冻结，不再继续通过 xbctl 扩展或修改"
+    hint "请执行 txnode migrate（或菜单「从 install.sh 导入」）转成 Docker 部署后再修改"
+    return 0
+  fi
+  if [ "$DEPLOY_MODE" = "none" ]; then
+    warn "txnode 尚未部署，请先安装（或从 install.sh 导入）"
+    return 0
+  fi
+
+  echo
+  # 注意：$EDITOR 在多数最小化镜像里**根本没有设置**，而本脚本开了 set -u，
+  # 这里裸写 "$EDITOR" 会直接 unbound variable 崩掉整个菜单。
+  # 凡是从环境里读的变量一律给默认值，见下方 pick_editor()。
+  echo "  1) 用向导重新生成配置（覆盖 config.yml）"
+  echo "  2) 手动编辑 config.yml（$(pick_editor)）"
+  echo "  3) 仅修改日志级别"
+  echo "  4) 访问审计开关（同主菜单 ${BOLD}7${NC}）"
+  echo "  5) 返回"
+  read -r -p "选择 [1-5]: " c || return 0
+  case "$c" in
+    1)
+      backup_config
+      read_panel_credentials
+      local prev_mode="$DEPLOY_MODE"
+      write_config_files
+      DEPLOY_MODE="$prev_mode"
+      do_restart
+      ;;
+    2)
+      local ed; ed=$(pick_editor)
+      "$ed" "$CONFIG_FILE"
+      if confirm "配置已保存，现在重启生效？" "Y"; then do_restart; fi
+      ;;
+    3)
+      local nl
+      read -r -p "新日志级别 [info/debug/warn/error]: " nl
+      [[ "$nl" =~ ^(info|debug|warn|error)$ ]] || fail "日志级别只支持 info/debug/warn/error"
+      backup_config
+      # 只替换顶层 log.level，不动其它
+      if grep -qE '^[[:space:]]*level:' "$CONFIG_FILE"; then
+        sed -i -E "0,/^[[:space:]]*level:/s//  level: \"$nl\"/" "$CONFIG_FILE"
+      else
+        printf '\nlog:\n  level: "%s"\n' "$nl" >> "$CONFIG_FILE"
+      fi
+      ok "日志级别已改为 $nl"
+      confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+      ;;
+    4)
+      do_audit
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+# 读取当前审计开关状态，输出到 stdout，格式 "enabled=<v> report_all=<v>"
+audit_read() {
+  local aud rpt
+  aud=$(awk '
+    /^audit:/ {inaudit=1}
+    inaudit && /^[[:space:]]*enabled:/ && !d {sub(/.*enabled:[[:space:]]*/,""); gsub(/[^a-z]/,""); print; d=1}
+    /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+  ' "$CONFIG_FILE" 2>/dev/null || true)
+  rpt=$(awk '
+    /^audit:/ {inaudit=1}
+    inaudit && /^[[:space:]]*report_all:/ && !d {sub(/.*report_all:[[:space:]]*/,""); gsub(/[^a-z]/,""); print; d=1}
+    /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+  ' "$CONFIG_FILE" 2>/dev/null || true)
+  # 必须以换行结尾：调用方用 `read ... < <(audit_read)` 取值，
+  # 而 read 遇到「无换行结尾的输入」会**返回非 0**（变量其实已赋值成功），
+  # 在 set -e 下会当场把整个脚本杀掉，且没有任何输出。
+  printf '%s %s\n' "${aud:-false}" "${rpt:-false}"
+}
+
+# 写入审计开关。参数：$1=enabled(可空) $2=report_all(可空)
+audit_write() {
+  local new_aud="${1:-}" new_rpt="${2:-}"
+  if [ -z "$new_aud" ] && [ -z "$new_rpt" ]; then return 0; fi
+
+  backup_config
+  if [ -n "${new_aud:-}" ]; then
+    if grep -qE '^audit:' "$CONFIG_FILE"; then
+      # 精确替换 audit 段内的 enabled（用 awk 限定范围，避免误改 panel 段的字段）
+      awk -v v="$new_aud" '
+        /^audit:/ {inaudit=1}
+        inaudit && /^[[:space:]]*enabled:/ && !done {sub(/enabled:.*/, "enabled: " v); done=1}
+        /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+        {print}
+      ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+      ok "audit.enabled → $new_aud"
+    else
+      printf '\naudit:\n  enabled: %s\n  report_all: false\n' "$new_aud" >> "$CONFIG_FILE"
+      ok "已追加 audit 段 (enabled=$new_aud)"
+    fi
+  fi
+  if [ -n "${new_rpt:-}" ]; then
+    if grep -qE '^[[:space:]]*report_all:' "$CONFIG_FILE"; then
+      awk -v v="$new_rpt" '
+        /^audit:/ {inaudit=1}
+        inaudit && /^[[:space:]]*report_all:/ && !done {sub(/report_all:.*/, "report_all: " v); done=1}
+        /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+        {print}
+      ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    else
+      awk -v v="$new_rpt" '
+        /^audit:/ {inaudit=1}
+        inaudit && /^[[:space:]]*enabled:/ && !done {print; print "  report_all: " v; done=1; next}
+        {print}
+      ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    fi
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    ok "audit.report_all → $new_rpt"
+    # 注意：这里不能用 `[ ... ] && hint` 收尾。该函数在 audit_write 里是最后一条语句时，
+    # 条件为假会让函数返回非 0，set -e 下调用方直接退出（明明改成功了却报失败）。
+    if [ "$new_rpt" = "false" ]; then
+      hint "report_all=false 时需在面板配置启用规则，否则不上报任何数据"
+    fi
+  fi
+  return 0
+}
+
+# 访问审计开关 —— 既支持主菜单交互，也支持非交互一键设置：
+#   txnode audit            → 显示状态 + 交互切换
+#   txnode audit on|off     → 一键开/关 enabled
+#   txnode audit all on|off → 一键设置 report_all
+do_audit() {
+  detect_deploy_mode
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh 部署，审计开关只能改 txnode 的 docker 布局"
+    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+    return 0
+  fi
+  if [ "$DEPLOY_MODE" = "none" ]; then
+    warn "txnode 尚未部署，请先安装（或从 install.sh 导入）"
+    return 0
+  fi
+  if [ ! -f "$CONFIG_FILE" ]; then
+    warn "配置文件不存在: $CONFIG_FILE"
+    return 0
+  fi
+
+  local sub="${1:-}" val="${2:-}"
+  local cur_aud cur_rpt
+  # `|| true` 是双保险：即使 audit_read 因故没输出，read 返回非 0 也不该
+  # 让 set -e 把脚本杀掉（后面的 :-false 兜底会补上默认值）。
+  read -r cur_aud cur_rpt < <(audit_read) || true
+  cur_aud="${cur_aud:-false}"; cur_rpt="${cur_rpt:-false}"
+
+  # ── 非交互：一键设置 ──
+  if [ -n "$sub" ]; then
+    case "$sub" in
+      on|enable|true)
+        if [ "$cur_aud" = "true" ]; then ok "审计已经是开启状态，无需改动"; return 0; fi
+        audit_write "true" ""
+        ok "访问审计已开启 (enabled=true)"
+        ;;
+      off|disable|false)
+        if [ "$cur_aud" = "false" ]; then ok "审计已经是关闭状态，无需改动"; return 0; fi
+        audit_write "false" ""
+        ok "访问审计已关闭 (enabled=false)"
+        ;;
+      all|report-all|report_all)
+        case "$val" in
+          on|enable|true)  val="true" ;;
+          off|disable|false) val="false" ;;
+          *)
+            if [ "$cur_rpt" = "true" ]; then val="false"; else val="true"; fi ;;
+        esac
+        audit_write "" "$val"
+        ok "report_all 已设为 $val"
+        if [ "$val" = "true" ]; then
+          hint "全量上报：所有连接都记入面板访问日志（量可能很大）"
+        else
+          hint "仅上报命中规则的连接 —— 面板没配启用规则时一条都不会上报"
+        fi
+        ;;
+      status|show)
+        echo "  audit.enabled   = $cur_aud"
+        echo "  audit.report_all= $cur_rpt"
+        return 0
+        ;;
+      *)
+        warn "未知参数: audit $sub"
+        hint "用法: txnode audit [on|off|all on|off|status]"
+        return 1
+        ;;
+    esac
+    if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行 txnode restart 生效"; fi
+    return 0
+  fi
+
+  # ── 交互：主菜单 ──
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}访问审计开关${NC}"
+    echo
+    if [ "$cur_aud" = "true" ]; then
+      echo -e "  当前状态: ${GREEN}已开启${NC}    report_all=${cur_rpt}"
+    else
+      echo -e "  当前状态: ${DIM}已关闭${NC}    report_all=${cur_rpt}"
+    fi
+    echo
+    if [ "$cur_aud" = "true" ]; then
+      echo -e "   ${BOLD}1${NC}) ${BOLD}一键关闭审计${NC}       ${DIM}enabled=false${NC}"
+    else
+      echo -e "   ${BOLD}1${NC}) ${BOLD}一键开启审计${NC}       ${DIM}enabled=true${NC}"
+    fi
+    if [ "$cur_rpt" = "true" ]; then
+      echo -e "   ${BOLD}2${NC}) 只上报命中规则的连接   ${DIM}report_all=false${NC}"
+    else
+      echo -e "   ${BOLD}2${NC}) 上报全部连接           ${DIM}report_all=true${NC}"
+    fi
+    echo -e "   ${BOLD}3${NC}) 返回"
+    echo
+    if [ "$cur_aud" = "true" ] && [ "$cur_rpt" = "false" ]; then
+      echo -e "   ${YELLOW}[!]${NC} report_all=false：面板若没有启用任何规则，一条数据都不会上报。"
+      echo -e "       想要全量访问日志请选 ${BOLD}2${NC}。"
+      echo
+    fi
+    read -r -p "  请选择: " c || return 0
+    case "$c" in
+      1)
+        if [ "$cur_aud" = "true" ]; then
+          audit_write "false" ""; ok "访问审计已关闭"
+        else
+          audit_write "true" ""; ok "访问审计已开启"
+        fi
+        if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行重启生效"; fi
+        return 0
+        ;;
+      2)
+        if [ "$cur_rpt" = "true" ]; then
+          audit_write "" "false"; ok "report_all → false（仅上报命中规则的连接）"
+        else
+          audit_write "" "true"; ok "report_all → true（上报全部连接）"
+        fi
+        if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行重启生效"; fi
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  done
+}
+
+# 配置校验：语法层面（YAML 缩进/引号）与必填字段
+do_validate() {
+  title "配置校验"
+  if [ ! -f "$CONFIG_FILE" ]; then
+    warn "配置文件不存在: $CONFIG_FILE"
+    return 0
+  fi
+  if config_uses_instances; then
+    validate_instances_config
+    return $?
+  fi
+  local errs=0
+
+  # 1) 区段感知取值，避免 panel / machine / nodes 之间串味
+  local url ptok mtok nid mid
+  url=$(_sec_get panel url || true)
+  ptok=$(_sec_get panel token || true)
+  mtok=$(_sec_get machine token || true)
+  nid=$(_sec_get panel node_id || true)
+  mid=$(_sec_get machine machine_id || true)
+  # token 也可能写在 token_env 里（不落盘明文）
+  local ptenv mtenv
+  ptenv=$(_sec_get panel token_env || true)
+  mtenv=$(_sec_get machine token_env || true)
+
+  local is_machine=no
+  _has_section machine && is_machine=yes
+
+  # 2) panel.url 必填（machine 模式同样需要 url）
+  [ -n "$url" ] || { warn "缺少 panel.url"; errs=$((errs+1)); }
+
+  # 3) token：至少一处（明文或 token_env）
+  if [ -z "$ptok" ] && [ -z "$mtok" ] && [ -z "$ptenv" ] && [ -z "$mtenv" ]; then
+    warn "缺少 token（panel.token / machine.token / *_env 至少要有一个）"; errs=$((errs+1))
+  fi
+  # 明文与 token_env 同时给属于歧义
+  if [ -n "$ptok" ] && [ -n "$ptenv" ]; then
+    warn "panel.token 与 panel.token_env 同时存在，配置有歧义（token_env 优先）"; errs=$((errs+1))
+  fi
+  if [ -n "$mtok" ] && [ -n "$mtenv" ]; then
+    warn "machine.token 与 machine.token_env 同时存在，配置有歧义（token_env 优先）"; errs=$((errs+1))
+  fi
+
+  # 4) 节点与机器：二选一（machine 段存在 = 机器模式，由节点动态发现，无需 node_id）
+  if [ "$is_machine" = "yes" ]; then
+    [ -n "$mid" ] || { warn "machine 段存在但缺少 machine_id"; errs=$((errs+1)); }
+    [ -n "$nid" ] && warn "机器模式下 panel.node_id 会被忽略（节点由面板动态下发）"
+  else
+    if [ -z "$nid" ]; then
+      warn "缺少 panel.node_id（单节点模式必填；多节点请改用 machine 段）"; errs=$((errs+1))
+    fi
+  fi
+
+  # 5) URL 形状
+  if [ -n "$url" ] && ! [[ "$url" =~ ^https?:// ]]; then
+    warn "panel.url 必须以 http:// 或 https:// 开头（当前: $url）"; errs=$((errs+1))
+  fi
+
+  # 6) 内核取值：Go 侧枚举是 singbox / xray，"sing-box" 是官方产品名不是配置值
+  local kern
+  kern=$(_sec_get kernel type || true)
+  if [ -n "$kern" ]; then
+    case "$kern" in
+      singbox|xray) ;;
+      sing-box) warn "kernel.type 应写 singbox（当前: sing-box）；sing-box 是产品名，配置值不带连字符"; errs=$((errs+1)) ;;
+      *) warn "kernel.type 只支持 singbox / xray（当前: $kern）"; errs=$((errs+1)) ;;
+    esac
+  else
+    warn "缺少 kernel.type（默认按 singbox 处理，建议显式写出）"
+  fi
+
+  # 7) TAB 字符（YAML 不允许缩进用 TAB）
+  if grep -qP '^\t' "$CONFIG_FILE" 2>/dev/null; then
+    warn "配置中存在 TAB 缩进，YAML 要求使用空格"; errs=$((errs+1))
+  fi
+
+  # 8) audit 段一致性（内嵌审计只在 singbox 内核下生效）
+  local aud rpt
+  aud=$(_sec_get audit enabled || true)
+  rpt=$(_sec_get audit report_all || true)
+  if [ "$aud" = "true" ]; then
+    if [ -n "$kern" ] && [ "$kern" != "singbox" ]; then
+      warn "audit.enabled=true 但内核是 $kern —— 内嵌审计仅在 singbox 内核下工作"
+      hint "xray 请用 AccessAudit 插件自带的 audit-agent.py 旁路"
+      errs=$((errs+1))
+    fi
+    if [ "${rpt:-false}" != "true" ]; then
+      warn "audit.enabled=true 且 report_all=false —— 只上报命中规则的连接"
+      hint "面板上若没有启用规则，将不会上报任何数据（这是最常见的「开了没数据」原因）"
+      hint "要全量日志请把 report_all 改为 true"
+    fi
+    if [ -z "$aud" ] || [ -z "$kern" ]; then
+      hint "audit 段存在但取值读不全，请检查缩进是否规范"
+    fi
+  fi
+
+  echo
+  if [ "$errs" -eq 0 ]; then
+    ok "校验通过，未发现问题"
+  else
+    warn "发现 $errs 个问题，请修正后重启"
+  fi
+
+  # 6) 额外：如果容器在跑，检查日志里有无明显错误
+  detect_deploy_mode
+  if [ "$DEPLOY_MODE" = "docker" ] && [ "$(container_state)" = "running" ]; then
+    echo
+    info "最近日志中的告警/错误（最多 10 条）："
+    docker logs --tail 200 "$APP_NAME" 2>&1 \
+      | grep -iE 'error|warn|failed|refused' | tail -10 || hint "（无）"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：备份 / 恢复
+# ════════════════════════════════════════════════════════════════════
+do_backup() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    warn "没有可备份的配置"
+    return 0
+  fi
+  mkdir -p "$BACKUP_DIR"
+  local stamp dest
+  stamp=$(date +%Y%m%d-%H%M%S)
+  dest="$BACKUP_DIR/backup-$stamp.tar.gz"
+  tar -czf "$dest" -C "$INSTALL_DIR" config.yml docker-compose.yml 2>/dev/null \
+    || tar -czf "$dest" -C "$INSTALL_DIR" config.yml
+  chmod 600 "$dest"
+  ok "备份完成 → $dest"
+  list_backups
+}
+
+list_backups() {
+  [ -d "$BACKUP_DIR" ] || return 0
+  local files
+  files=$(ls -1t "$BACKUP_DIR" 2>/dev/null || true)
+  [ -z "$files" ] && { hint "（暂无备份）"; return 0; }
+  echo
+  echo "  现有备份："
+  local i=0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    i=$((i+1))
+    printf "    %2d) %s\n" "$i" "$f"
+  done <<< "$files"
+}
+
+do_restore() {
+  [ -d "$BACKUP_DIR" ] || { warn "没有备份目录"; return 0; }
+  local files
+  mapfile -t files < <(ls -1t "$BACKUP_DIR" 2>/dev/null || true)
+  if [ ${#files[@]} -eq 0 ]; then
+    warn "没有可用备份"; return 0
+  fi
+  title "从备份恢复"
+  local i=1
+  for f in "${files[@]}"; do
+    echo "    $i) $f"
+    i=$((i+1))
+  done
+  read -r -p "  选择要恢复的备份编号 [1-${#files[@]}]: " sel
+  [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le ${#files[@]} ] || fail "无效编号"
+  local chosen="${files[$((sel-1))]}"
+  if ! confirm "确认用 $chosen 覆盖当前配置？" "n"; then
+    info "已取消"; return 0
+  fi
+  backup_config
+  if [[ "$chosen" == *.tar.gz ]]; then
+    tar -xzf "$BACKUP_DIR/$chosen" -C "$INSTALL_DIR"
+  else
+    cp -a "$BACKUP_DIR/$chosen" "$CONFIG_FILE"
+  fi
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  ok "已恢复 $chosen"
+  detect_deploy_mode
+  if is_installed; then
+    confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  多面板 / 隔离实例
+# ════════════════════════════════════════════════════════════════════
+config_uses_instances() {
+  [ -f "$CONFIG_FILE" ] && grep -qE '^instances:[[:space:]]*$' "$CONFIG_FILE" 2>/dev/null
+}
+
+config_instance_targets() {
+  [ -f "$CONFIG_FILE" ] || return 0
+  awk '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); gsub(/^"|"$/, "", s); return s }
+    function flush() {
+      if (url == "") return
+      if (mid != "") print url "\tmachine\t" mid
+      for (i = 1; i <= ncount; i++) if (nodes[i] != "") print url "\tnode\t" nodes[i]
+    }
+    BEGIN { ininst=0; url=""; mid=""; ncount=0; inpanel=0 }
+    /^instances:[[:space:]]*$/ { ininst=1; next }
+    ininst && /^[^[:space:]#]/ { flush(); exit }
+    !ininst { next }
+    /^[[:space:]]*-[[:space:]]*(panel:)?[[:space:]]*$/ {
+      flush(); url=""; mid=""; ncount=0; delete nodes; inpanel=($0 ~ /panel:/); next
+    }
+    /^[[:space:]]+panel:[[:space:]]*$/ { inpanel=1; next }
+    /^[[:space:]]+(machine|kernel|log|audit|runtime|ws|cert|node|nodes):[[:space:]]*$/ { inpanel=0; next }
+    inpanel && /^[[:space:]]+url:[[:space:]]*/ {
+      v=$0; sub(/^[^:]*:[[:space:]]*/, "", v); sub(/[[:space:]]*#.*$/, "", v); url=trim(v); next
+    }
+    /^[[:space:]]+machine_id:[[:space:]]*/ {
+      v=$0; sub(/.*machine_id:[[:space:]]*/, "", v); sub(/[^0-9].*$/, "", v); mid=v; next
+    }
+    /^[[:space:]]+(-[[:space:]]*)?node_id:[[:space:]]*/ {
+      v=$0; sub(/.*node_id:[[:space:]]*/, "", v); sub(/[^0-9].*$/, "", v)
+      if (v != "") nodes[++ncount]=v
+    }
+    END { if (ininst) flush() }
+  ' "$CONFIG_FILE" 2>/dev/null | awk '!seen[$0]++'
+}
+
+instances_summary() {
+  local rows count=0
+  rows=$(config_instance_targets || true)
+  if [ -z "$rows" ]; then
+    hint "（instances 已启用，但没有解析到目标）"
+    return 0
+  fi
+  while IFS=$'\t' read -r url mode id; do
+    [ -n "$url" ] || continue
+    count=$((count+1))
+    if [ "$mode" = "machine" ]; then
+      echo "    $count) $url · machine_id=$id"
+    else
+      echo "    $count) $url · node_id=$id"
+    fi
+  done <<EOF
+$rows
+EOF
+}
+
+current_target_exists() {
+  local url="${1%/}" mode="$2" id="$3"
+  if config_uses_instances; then
+    config_instance_targets | awk -F'\t' -v u="$url" -v m="$mode" -v i="$id" '
+      $1 == u && $2 == m && $3 == i { found=1 }
+      END { exit(found ? 0 : 1) }
+    '
+    return $?
+  fi
+
+  local cur_url
+  cur_url=$(_sec_get panel url || true)
+  cur_url="${cur_url%/}"
+  [ "$cur_url" = "$url" ] || return 1
+  if [ "$mode" = "machine" ]; then
+    [ "$(_sec_get machine machine_id || true)" = "$id" ]
+    return $?
+  fi
+  if [ "$(_sec_get panel node_id || true)" = "$id" ]; then
+    return 0
+  fi
+  grep -qE "^[[:space:]]*-[[:space:]]*node_id:[[:space:]]*$id([[:space:]]|$)" "$CONFIG_FILE" 2>/dev/null
+}
+
+wrap_config_as_instances() {
+  config_uses_instances && return 0
+  local tmp="$CONFIG_FILE.instances.$$"
+  {
+    echo "# Multi-panel layout managed by tx-node deploy.sh"
+    echo "instances:"
+    echo "  -"
+    sed 's/^/    /' "$CONFIG_FILE"
+  } > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$CONFIG_FILE"
+}
+
+render_instance_block() {
+  if [ "$MODE_STR" = "machine" ]; then
+    cat <<EOF
+  - panel:
+      provider: "${PANEL_PROVIDER:-xboard}"
+      url: "$PANEL_URL"
+    machine:
+      machine_id: $MACHINE_ID
+      token: "$MACHINE_TOKEN"
+    kernel:
+      type: "$KERNEL"
+    log:
+      level: "$LOG_LEVEL"
+    audit:
+      enabled: $AUDIT_ENABLED
+      report_all: $REPORT_ALL
+EOF
+  else
+    cat <<EOF
+  - panel:
+      provider: "${PANEL_PROVIDER:-xboard}"
+      url: "$PANEL_URL"
+      token: "$NODE_TOKEN"
+      node_id: $NODE_ID
+    kernel:
+      type: "$KERNEL"
+    log:
+      level: "$LOG_LEVEL"
+    audit:
+      enabled: $AUDIT_ENABLED
+      report_all: $REPORT_ALL
+EOF
+  fi
+}
+
+append_instance_block() {
+  local block_file="$1" tmp="$CONFIG_FILE.append.$$"
+  awk -v bf="$block_file" '
+    function emit() { while ((getline line < bf) > 0) print line; close(bf) }
+    BEGIN { ininst=0; inserted=0 }
+    /^instances:[[:space:]]*$/ { ininst=1; print; next }
+    ininst && /^[^[:space:]#]/ {
+      if (!inserted) { emit(); inserted=1 }
+      ininst=0
+    }
+    { print }
+    END { if (ininst && !inserted) emit() }
+  ' "$CONFIG_FILE" > "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$CONFIG_FILE"
+}
+
+configured_health_port() {
+  [ -f "$CONFIG_FILE" ] || return 0
+  grep -m1 -E '^[[:space:]]*health_port:[[:space:]]*[0-9]+' "$CONFIG_FILE" 2>/dev/null \
+    | sed -E 's/.*health_port:[[:space:]]*//' | tr -cd '0-9'
+}
+
+wait_configured_health() {
+  local hp seconds="${1:-10}" i=0
+  hp=$(configured_health_port || true)
+  [ -n "$hp" ] && [ "$hp" -gt 0 ] 2>/dev/null || return 0
+  while [ "$i" -lt "$seconds" ]; do
+    curl -fsS "http://127.0.0.1:$hp/healthz" >/dev/null 2>&1 && return 0
+    sleep 1
+    i=$((i+1))
+  done
+  return 1
+}
+
+runtime_has_bind_conflict() {
+  docker logs --since 20s "$APP_NAME" 2>&1 \
+    | grep -qiE 'address already in use|bind:.*in use|failed to (listen|bind)|port .*already.*use'
+}
+
+restart_after_instance_change() {
+  local rollback="$1"
+  runtime_set_restart_policy "no"
+  if docker restart "$APP_NAME" >/dev/null 2>&1 \
+    && wait_container_stable 6 \
+    && ! runtime_has_bind_conflict \
+    && wait_configured_health 12; then
+    promote_restart_policy
+    ok "新实例已生效"
+    return 0
+  fi
+
+  warn "新实例启动验证失败，自动恢复原配置"
+  cp -f "$rollback" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  docker restart "$APP_NAME" >/dev/null 2>&1 || true
+  wait_container_stable 6 && promote_restart_policy || true
+  return 1
+}
+
+do_add_panel_instance() {
+  detect_deploy_mode
+  [ "$DEPLOY_MODE" = "docker" ] || { warn "需要先有 txnode docker 部署"; return 1; }
+  [ -f "$CONFIG_FILE" ] || fail "配置文件不存在: $CONFIG_FILE"
+
+  title "添加面板 / 实例"
+  hint "推荐：同一个 tx-node 容器用 instances[] 同时连接多个 TXBoard。"
+  if [ "${NONINTERACTIVE_INSTALL:-0}" != "1" ]; then
+    read_panel_credentials
+  fi
+
+  local target_mode target_id
+  if [ "$MODE_STR" = "machine" ]; then
+    target_mode="machine"; target_id="$MACHINE_ID"
+  else
+    target_mode="node"; target_id="$NODE_ID"
+  fi
+
+  if current_target_exists "$PANEL_URL" "$target_mode" "$target_id"; then
+    warn "该面板目标已经存在：$PANEL_URL · ${target_mode}_id=$target_id"
+    return 0
+  fi
+
+  if [ "${NONINTERACTIVE_INSTALL:-0}" != "1" ]; then
+    if ! confirm "把该目标加入当前 tx-node 容器？" "Y"; then
+      info "已取消"; return 0
+    fi
+  else
+    info "检测到已有 TX-Node，非交互安装将追加为新的 panel instance"
+  fi
+
+  mkdir -p "$BACKUP_DIR"
+  local rollback="$BACKUP_DIR/pre-instance-add.$(date +%Y%m%d-%H%M%S).yml"
+  cp -a "$CONFIG_FILE" "$rollback"
+
+  wrap_config_as_instances
+  local block="$INSTALL_DIR/.instance.$$"
+  render_instance_block > "$block"
+  append_instance_block "$block"
+  rm -f "$block"
+
+  if restart_after_instance_change "$rollback"; then
+    instances_summary
+    return 0
+  fi
+  return 1
+}
+
+port_in_use() {
+  local p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$p$"
+    return $?
+  fi
+  return 1
+}
+
+find_free_health_port() {
+  local p="${1:-65531}" end=$((${1:-65531} + 200))
+  while [ "$p" -le "$end" ]; do
+    if ! port_in_use "$p"; then echo "$p"; return 0; fi
+    p=$((p+1))
+  done
+  return 1
+}
+
+find_next_isolated_suffix() {
+  local n=2
+  while [ "$n" -lt 100 ]; do
+    local name="tx-node-$n" dir="$ISOLATED_ROOT_BASE-$n" cli="$ISOLATED_CLI_BASE-$n"
+    if [ ! -e "$dir" ] && [ ! -e "$cli" ] \
+      && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$name"; then
+      echo "$n"
+      return 0
+    fi
+    n=$((n+1))
+  done
+  return 1
+}
+
+do_install_isolated() {
+  ensure_docker
+  local suffix hp runner
+  suffix=$(find_next_isolated_suffix) || fail "无法分配新的隔离实例编号"
+  hp=$(find_free_health_port $((65529 + suffix))) || fail "无法找到空闲健康检查端口"
+
+  local child_name="tx-node-$suffix"
+  local child_dir="$ISOLATED_ROOT_BASE-$suffix"
+  local child_cli="$ISOLATED_CLI_BASE-$suffix"
+
+  title "创建隔离 TX-Node"
+  echo "  容器:     $child_name"
+  echo "  配置目录: $child_dir"
+  echo "  快捷命令: $child_cli"
+  echo "  健康端口: $hp"
+  hint "仍使用 host network；若面板下发的服务端口冲突，启动验证会失败。"
+  confirm "继续？" "Y" || return 0
+
+  runner="$SELF_COPY"
+  if ! materialize_self_copy; then
+    self_path_is_persistent "$SELF_PATH" || fail "无法取得持久化 deploy.sh"
+    runner="$SELF_PATH"
+  fi
+
+  APP_NAME="$child_name" \
+  INSTALL_DIR="$child_dir" \
+  CLI_LINK="$child_cli" \
+  TXNODE_HEALTH_PORT="$hp" \
+  IMAGE="$IMAGE" \
+  TXNODE_ISOLATED_ROOT_BASE="$ISOLATED_ROOT_BASE" \
+  TXNODE_ISOLATED_CLI_BASE="$ISOLATED_CLI_BASE" \
+    bash "$runner" install
+}
+
+do_existing_install() {
+  title "检测到已有 TX-Node"
+  echo "  1) 添加新的面板 / 实例（推荐）"
+  echo "  2) 创建完全隔离的第二个 TX-Node"
+  echo "  3) 覆盖重配当前实例"
+  echo "  0) 取消"
+  read -r -p "选择 [0-3]: " c || return 0
+  case "$c" in
+    1) do_add_panel_instance ;;
+    2) do_install_isolated ;;
+    3)
+      confirm "确认覆盖当前 config.yml？" "n" || return 0
+      read_panel_credentials
+      backup_config
+      write_config_files
+      do_restart
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_instances_config() {
+  local rows errs=0 count=0 duplicates
+  rows=$(config_instance_targets || true)
+  if [ -z "$rows" ]; then
+    warn "instances 段存在，但没有解析到有效目标"
+    return 1
+  fi
+
+  while IFS=$'\t' read -r url mode id; do
+    [ -n "$url" ] || continue
+    count=$((count+1))
+    [[ "$url" =~ ^https?:// ]] || { warn "无效 panel.url: $url"; errs=$((errs+1)); }
+    [[ "$id" =~ ^[0-9]+$ ]] && [ "$id" -gt 0 ] || { warn "无效 ${mode}_id: $id"; errs=$((errs+1)); }
+  done <<EOF
+$rows
+EOF
+
+  duplicates=$(printf '%s\n' "$rows" | sort | uniq -d)
+  if [ -n "$duplicates" ]; then
+    warn "发现重复面板目标："
+    printf '%s\n' "$duplicates"
+    errs=$((errs+1))
+  fi
+
+  if [ "$errs" -eq 0 ]; then
+    ok "多面板配置校验通过：$count 个目标"
+    return 0
+  fi
+  return 1
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：多节点 / 多机器（基于 nodes 段）
+# ════════════════════════════════════════════════════════════════════
+# 读取 config 里 nodes: 段的现状
+nodes_summary() {
+  [ -f "$CONFIG_FILE" ] || return 0
+  if config_uses_instances; then
+    instances_summary
+    return 0
+  fi
+  if ! grep -qE '^nodes:' "$CONFIG_FILE" 2>/dev/null; then
+    hint "（当前是单节点/machine 模式，未使用 nodes 段）"
+    return 0
+  fi
+  echo "  当前 nodes 段内容："
+  awk '/^nodes:/{f=1} f&&/^[^[:space:]#]/&&!/^nodes:/{f=0} f{print "    "$0}' "$CONFIG_FILE"
+}
+
+do_add_node() {
+  detect_deploy_mode
+  if config_uses_instances; then
+    warn "当前已启用 instances 多面板布局，请使用「添加面板 / 实例」。"
+    return 0
+  fi
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh legacy 部署；其管理面已冻结"
+    hint "请先执行 txnode migrate（或菜单「从 install.sh 导入」）迁移到 Docker，再管理节点"
+    return 0
+  fi
+
+  # docker 模式：往 config.yml 的 nodes 段追加
+  [ -f "$CONFIG_FILE" ] || fail "配置文件不存在，请先安装"
+  title "添加节点（多节点模式）"
+  warn "加入 nodes 段后，panel.node_id 将被忽略，本进程会同时服务 nodes 段里的全部节点"
+  hint "前提：这些节点与当前配置的 panel.url / token 相同"
+
+  local nid ntype
+  read -r -p "node_id（要新增的节点 ID）: " nid
+  [[ "$nid" =~ ^[0-9]+$ ]] && [ "$nid" -gt 0 ] || fail "node_id 必须是正整数"
+
+  # 去重
+  if grep -qE "^[[:space:]]*-[[:space:]]*node_id:[[:space:]]*${nid}([[:space:]]|$)" "$CONFIG_FILE" 2>/dev/null; then
+    warn "node_id ${nid} 已存在于 nodes 段"; return 0
+  fi
+
+  read -r -p "node_type（可留空，面板可自动识别）: " ntype
+
+  backup_config
+  # 确保存在 nodes: 段
+  if ! grep -qE '^nodes:' "$CONFIG_FILE" 2>/dev/null; then
+    printf '\n# 多节点：本进程同时服务以下节点（panel.node_id 被忽略）\nnodes:\n' >> "$CONFIG_FILE"
+  fi
+  {
+    echo "  - node_id: $nid"
+    [ -n "$ntype" ] && echo "    node_type: \"$ntype\""
+  } >> "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  ok "已添加 node_id=$nid 到 nodes 段"
+  nodes_summary
+  confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+}
+
+do_remove_node() {
+  detect_deploy_mode
+  if config_uses_instances; then
+    warn "当前已启用 instances 多面板布局；请手动编辑对应 instance，避免误删其它面板。"
+    return 0
+  fi
+  [ -f "$CONFIG_FILE" ] || fail "配置文件不存在"
+  if ! grep -qE '^nodes:' "$CONFIG_FILE" 2>/dev/null; then
+    warn "当前没有 nodes 段（单节点模式）"
+    hint "要改单节点的 node_id，请用「重新配置」"
+    return 0
+  fi
+  title "移除节点"
+  nodes_summary
+  local nid
+  read -r -p "  要移除的 node_id: " nid
+  [[ "$nid" =~ ^[0-9]+$ ]] || fail "node_id 必须是正整数"
+  if ! grep -qE "^[[:space:]]*-[[:space:]]*node_id:[[:space:]]*${nid}([[:space:]]|$)" "$CONFIG_FILE" 2>/dev/null; then
+    warn "nodes 段中没有 node_id=$nid"; return 0
+  fi
+  if ! confirm "确认移除 node_id=$nid？" "n"; then info "已取消"; return 0; fi
+
+  backup_config
+  # 删除该 node 条目（含紧随其后的缩进子字段，直到下一个 - node_id 或段结束）
+  awk -v target="$nid" '
+    function is_entry(l) { return l ~ /^[[:space:]]*-[[:space:]]*node_id:/ }
+    function is_top(l)   { return l ~ /^[^[:space:]#]/ }
+    {
+      if (is_entry($0)) {
+        if (in_skip) in_skip=0
+        n=$0; sub(/.*node_id:[[:space:]]*/, "", n); sub(/[^0-9].*$/, "", n)
+        if (n == target) { in_skip=1; next }
+      } else if (in_skip && is_top($0)) {
+        in_skip=0
+      }
+      if (!in_skip) print
+    }
+  ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  ok "已移除 node_id=$nid"
+  nodes_summary
+  confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+}
+
+do_machine_mode() {
+  detect_deploy_mode
+  if config_uses_instances; then
+    warn "当前已启用 instances 多面板布局，请通过「添加面板 / 实例」新增 machine instance。"
+    return 0
+  fi
+  title "机器模式设置"
+  echo "  机器模式下，本进程通过 machine token 接管面板上绑定到该机器的【全部】节点。"
+  echo "  优点：面板上加节点无需改本机配置。"
+  echo
+  echo "  1) 切换到机器模式（用 machine_id + 令牌重配）"
+  echo "  2) 切回单节点模式"
+  echo "  3) 返回"
+  read -r -p "选择 [1-3]: " c
+  case "$c" in
+    1)
+      [ "$DEPLOY_MODE" = "legacy" ] && {
+        warn "当前只有 install.sh legacy 部署；请先迁移到 txnode Docker 再切换 Machine mode"
+        hint "执行: txnode migrate"
+        return 0
+      }
+      [ "$DEPLOY_MODE" = "docker" ] || { warn "txnode 尚未部署，请先安装或从 install.sh 导入"; return 0; }
+      local url mid tok
+      read -r -p "面板地址: " url || return 0
+      url="${url%/}"
+      [[ "$url" =~ ^https?:// ]] || fail "面板地址必须以 http:// 或 https:// 开头"
+      read -r -p "machine_id: " mid
+      [[ "$mid" =~ ^[0-9]+$ ]] && [ "$mid" -gt 0 ] || fail "machine_id 必须是正整数"
+      read -r -s -p "machine token（不回显）: " tok; echo
+      [ -n "$tok" ] || fail "machine token 不能为空"
+      backup_config
+      cat > "$CONFIG_FILE" <<EOF
+# Generated by tx-node deploy.sh ($(date '+%Y-%m-%d %H:%M:%S'))
+panel:
+  url: "$url"
+machine:
+  machine_id: $mid
+  token: "$tok"
+
+kernel:
+  type: "singbox"
+
+log:
+  level: "info"
+
+audit:
+  enabled: true
+  report_all: false
+EOF
+      chmod 600 "$CONFIG_FILE"
+      ok "已切换为机器模式 (machine_id=$mid)"
+      confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+      ;;
+    2)
+      if ! grep -qE '^machine:' "$CONFIG_FILE" 2>/dev/null; then
+        warn "当前不是机器模式"; return 0
+      fi
+      info "切回单节点模式需要 node_id 与 server token，将走完整配置向导"
+      do_reconfigure
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  Legacy install.sh runtime cleanup
+#  This is the Installer-owned replacement for the retired xbctl uninstall
+#  path. It never touches the canonical Docker deployment under /etc/txnode.
+# ════════════════════════════════════════════════════════════════════
+do_legacy_cleanup() {
+  local purge=0 yes=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --purge) purge=1 ;;
+      --yes|-y) yes=1 ;;
+      *) fail "legacy-cleanup 不支持参数: $arg" ;;
+    esac
+  done
+
+  if ! detect_legacy_install; then
+    info "未检测到 install.sh / systemd legacy 部署，无需清理"
+    return 0
+  fi
+
+  title "清理 install.sh legacy runtime"
+  echo "  服务:     $SERVICE_NAME"
+  echo "  二进制:   $SB_BINARY"
+  echo "  旧命令:   $XBCTL_PATH"
+  echo "  配置目录: $LEGACY_INSTALL_ROOT"
+  if [ "$purge" = "1" ]; then
+    warn "将同时删除 legacy 配置目录；canonical /etc/txnode 不受影响"
+  else
+    hint "默认只删除 legacy runtime，保留 $LEGACY_INSTALL_ROOT 供审计/回滚"
+  fi
+
+  if [ "$yes" != "1" ]; then
+    if [ "$purge" = "1" ]; then
+      confirm_typed " " "LEGACY-PURGE" || { info "已取消"; return 0; }
+    else
+      confirm "确认删除 legacy systemd runtime？" "n" || { info "已取消"; return 0; }
+    fi
+  fi
+
+  local warnings=()
+
+  if [ -f "$SERVICE_PATH" ]; then
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    if ! rm -f "$SERVICE_PATH"; then
+      warnings+=("remove service file: $SERVICE_PATH")
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  for legacy_bin in "$SB_BINARY" "$XBCTL_PATH" "$XBCTL_COMPAT_PATH"; do
+    if [ -e "$legacy_bin" ] || [ -L "$legacy_bin" ]; then
+      rm -f "$legacy_bin" || warnings+=("remove $legacy_bin")
+    fi
+  done
+
+  if [ "$purge" = "1" ]; then
+    rm -rf "$LEGACY_INSTALL_ROOT" || warnings+=("remove $LEGACY_INSTALL_ROOT")
+  fi
+
+  if [ -f "$SERVICE_PATH" ] || [ -x "$SB_BINARY" ] || [ -x "$XBCTL_PATH" ]; then
+    warnings+=("legacy runtime markers still detected")
+  fi
+
+  if [ "${#warnings[@]}" -gt 0 ]; then
+    warn "legacy cleanup 完成，但有以下残留："
+    local item
+    for item in "${warnings[@]}"; do
+      echo "  - $item"
+    done
+    return 1
+  fi
+
+  ok "legacy systemd runtime 已清理"
+  if [ "$purge" != "1" ] && [ -d "$LEGACY_INSTALL_ROOT" ]; then
+    hint "legacy 配置仍保留在 $LEGACY_INSTALL_ROOT"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：卸载 / 彻底清除
+# ════════════════════════════════════════════════════════════════════
+do_uninstall() {
+  detect_deploy_mode
+  ! is_installed && fail "未检测到已部署的 tx-node"
+
+  title "卸载 tx-node（保留配置）"
+  hint "容器/服务与命令会被移除，配置保留在 $INSTALL_DIR"
+  hint "如需连配置一起删除，请用「彻底清除」"
+
+  if ! confirm "确认卸载？" "n"; then info "已取消"; return 0; fi
+
+  case "$DEPLOY_MODE" in
+    docker)
+      dc down 2>/dev/null || docker rm -f "$APP_NAME" 2>/dev/null || true
+      # 停用 compose 但保留文件（重装时可直接复用）
+      [ -f "$COMPOSE_FILE" ] && mv "$COMPOSE_FILE" "$COMPOSE_FILE.uninstalled" 2>/dev/null || true
+      ;;
+    legacy)
+      warn "检测到 install.sh 部署（${SERVICE_NAME}）"
+      hint "txnode 的卸载不会动它 —— 它有自己的卸载入口"
+      hint "如需清理 legacy runtime，请执行: txnode legacy-cleanup [--purge]"
+      ;;
+  esac
+
+  rm -f "$CLI_LINK" 2>/dev/null || true
+  ok "已卸载，配置保留在 $INSTALL_DIR"
+  hint "重新安装: bash $SELF_PATH install"
+}
+
+do_purge() {
+  detect_deploy_mode
+  title "彻底清除 tx-node"
+  echo -e "${RED}  将删除以下内容：${NC}"
+  echo "    - txnode 容器"
+  echo "    - compose / 配置 / 备份（$INSTALL_DIR）"
+  echo "    - 拉取的镜像 $IMAGE"
+  echo "    - 快捷命令 $CLI_LINK"
+  echo -e "${DIM}    （install.sh 的 /etc/xboard-node 不在范围内）${NC}"
+  if [ "$DEPLOY_MODE" = "none" ]; then
+    warn "未检测到部署，但仍会清理残留文件与镜像"
+  fi
+
+  if ! confirm_typed " " "PURGE"; then
+    info "已取消（输入不匹配）"; return 0
+  fi
+
+  case "$DEPLOY_MODE" in
+    docker)
+      dc down -v 2>/dev/null || docker rm -f "$APP_NAME" 2>/dev/null || true
+      ;;
+    legacy)
+      warn "检测到 install.sh 部署 —— txnode 的 purge 不会删除它"
+      hint "如需清理 install.sh legacy 部署，请执行: txnode legacy-cleanup --purge"
+      ;;
+  esac
+
+  rm -f "$CLI_LINK" 2>/dev/null || true
+  rm -rf "$INSTALL_DIR"
+  ok "已删除 $INSTALL_DIR"
+
+  # 删镜像（先确认没有其他容器在用）
+  if command -v docker >/dev/null 2>&1; then
+    if docker images -q "$IMAGE" >/dev/null 2>&1 && [ -n "$(docker images -q "$IMAGE" 2>/dev/null)" ]; then
+      docker rmi "$IMAGE" >/dev/null 2>&1 && ok "已删除镜像 $IMAGE" \
+        || warn "镜像删除失败（可能仍被其他容器引用）"
+    fi
+    # 清理同名旧镜像的悬空层
+    docker image prune -f >/dev/null 2>&1 || true
+  fi
+
+  echo
+  ok "彻底清除完成，系统已恢复干净状态"
+  hint "如需重新部署: bash <(curl -fsSL https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh)"
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  动作：健康检查 / 诊断
+# ════════════════════════════════════════════════════════════════════
+do_doctor() {
+  detect_deploy_mode
+  title "诊断"
+  echo -e "  1) 部署模式: ${BOLD}${DEPLOY_MODE}${NC}"
+
+  # Docker 环境
+  if command -v docker >/dev/null 2>&1; then
+    echo "  Docker: $(docker --version 2>/dev/null | head -1)"
+    if docker compose version >/dev/null 2>&1; then
+      echo "  compose: 可用"
+    else
+      warn "compose 插件不可用"
+    fi
+  else
+    warn "未安装 docker"
+  fi
+
+  # 系统资源
+  echo
+  echo -e "  ${BOLD}系统${NC}"
+  echo "    CPU 核数: $(nproc 2>/dev/null || echo '?')"
+  if [ -r /proc/meminfo ]; then
+    local mt ma
+    mt=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    # 老内核没有 MemAvailable，退化用 MemFree
+    ma=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    [ -n "$ma" ] || ma=$(awk '/^MemFree:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    if [ -n "$mt" ] && [ -n "$ma" ]; then
+      echo "    内存: ${ma}MB 可用 / ${mt}MB 总计"
+    elif [ -n "$mt" ]; then
+      echo "    内存: ${mt}MB 总计"
+    fi
+  fi
+  echo "    磁盘 ${INSTALL_DIR}: $(df -h "$INSTALL_DIR" 2>/dev/null | awk 'NR==2{print $4" 可用 / "$2" 总计 ("$5" 已用)"}' || echo '?')"
+
+  # 端口占用（节点需要监听面板下发配置里的端口，这里只做提示）
+  echo
+  echo -e "  ${BOLD}网络${NC}"
+  local panel_url
+  panel_url=$(_sec_get panel url || true)
+  if [ -n "$panel_url" ]; then
+    echo "    面板地址: $panel_url"
+    if curl -fsS -o /dev/null -m 8 "$panel_url" 2>/dev/null; then
+      ok "    面板可达"
+    else
+      warn "    面板不可达（检查网络 / 域名解析 / 防火墙）"
+    fi
+  fi
+
+  # 容器细节
+  if [ "$DEPLOY_MODE" = "docker" ]; then
+    echo
+    echo -e "  ${BOLD}容器${NC}"
+    echo "    状态: $(container_state)"
+    local restarts
+    restarts=$(docker inspect -f '{{.RestartCount}}' "$APP_NAME" 2>/dev/null || echo "?")
+    echo "    重启次数: $restarts"
+    [ "$restarts" != "0" ] && [ "$restarts" != "?" ] && warn "重启次数偏高，可能有崩溃循环，请查看日志"
+  fi
+
+  # 审计状态检查
+  if [ "$DEPLOY_MODE" = "docker" ] && [ "$(container_state)" = "running" ]; then
+    echo
+    echo -e "  ${BOLD}审计模块${NC}"
+    if docker logs "$APP_NAME" 2>&1 | grep -q "audit reporter enabled"; then
+      ok "    已启用并连接面板"
+      # 检查空规则告警（这个坑很常见）
+      if docker logs "$APP_NAME" 2>&1 | grep -q "report_all=false"; then
+        warn "    日志提示 report_all=false —— 若面板无启用规则则不会上报任何数据"
+        hint "    详见 README「最常见的坑」一节"
+      fi
+      local rep
+      rep=$(docker logs "$APP_NAME" 2>&1 | grep -c "audit: reported" || true)
+      [ "${rep:-0}" -gt 0 ] && echo "    已成功上报批次: $rep" || hint "    尚未观察到成功上报"
+    else
+      hint "    未启用（或日志已滚动）"
+    fi
+  fi
+
+  echo
+  ok "诊断完成"
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  交互式主菜单
+# ════════════════════════════════════════════════════════════════════
+banner() {
+  clear 2>/dev/null || true
+  detect_deploy_mode
+  echo -e "${BOLD}${CYAN}"
+  cat <<'ASCII'
+   ████████ ██   ██       ███    ██  ██████  ██████  ███████
+      ██     ██ ██        ████   ██ ██    ██ ██   ██ ██
+      ██      ███         ██ ██  ██ ██    ██ ██   ██ █████
+      ██     ██ ██        ██  ██ ██ ██    ██ ██   ██ ██
+      ██    ██   ██       ██   ████  ██████  ██████  ███████
+ASCII
+  echo -e "${NC}"
+  local state_txt state_color
+  case "$DEPLOY_MODE" in
+    docker)
+      local cst; cst=$(container_state)
+      case "$cst" in
+        running) state_color="$GREEN"; state_txt="运行中" ;;
+        *)       state_color="$YELLOW"; state_txt="$cst" ;;
+      esac
+      echo -e "   状态: ${state_color}● ${state_txt}${NC}  ${DIM}(docker · $APP_NAME)${NC}"
+      ;;
+    legacy)
+      local sst; sst=$(svc_state)
+      case "$sst" in
+        active) state_color="$GREEN"; state_txt="运行中" ;;
+        *)      state_color="$YELLOW"; state_txt="$sst" ;;
+      esac
+      echo -e "   状态: ${state_color}● ${state_txt}${NC}  ${DIM}(install.sh · $SERVICE_NAME)${NC}"
+      echo -e "   ${YELLOW}检测到 install.sh 部署，可导入为 txnode${NC}"
+      ;;
+    *)
+      echo -e "   状态: ${YELLOW}● 未部署${NC}"
+      ;;
+  esac
+  hr
+}
+
+menu() {
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}运维面板${NC}"
+    echo
+    if is_installed; then
+      echo -e "   ${BOLD}1${NC}) 查看状态            ${DIM}运行状态 / 配置摘要 / 健康检查${NC}"
+      echo -e "   ${BOLD}2${NC}) 查看日志            ${DIM}实时跟踪${NC}"
+      echo -e "   ${BOLD}3${NC}) 重启                ${DIM}改完配置后用这个${NC}"
+      echo -e "   ${BOLD}4${NC}) 启动 / 停止         ${DIM}子菜单${NC}"
+      echo -e "   ${BOLD}5${NC}) 升级                ${DIM}拉取最新镜像并重建${NC}"
+      echo -e "   ${BOLD}6${NC}) 修改配置            ${DIM}向导 / 手编 / 日志级别${NC}"
+      echo -e "   ${BOLD}7${NC}) 访问审计开关        ${DIM}一键开启 / 关闭审计上报${NC}"
+      echo -e "   ${BOLD}8${NC}) 配置校验与诊断      ${DIM}排错用${NC}"
+      echo -e "   ${BOLD}9${NC}) 节点与机器管理      ${DIM}多节点 / 机器模式${NC}"
+      echo -e "  ${BOLD}10${NC}) 备份 / 恢复         ${DIM}配置备份与回滚${NC}"
+      echo -e "  ${BOLD}11${NC}) 卸载                ${DIM}保留配置${NC}"
+      echo -e "  ${BOLD}12${NC}) 彻底清除            ${RED}${DIM}删除全部数据（不可逆）${NC}"
+      echo -e "  ${BOLD}13${NC}) 快捷命令            ${DIM}安装 / 重建 txnode 命令${NC}"
+      if detect_legacy_install; then
+        echo -e "  ${BOLD}14${NC}) 从 install.sh 导入   ${CYAN}${DIM}检测到 install.sh 部署，可转成 docker${NC}"
+      fi
+    else
+      echo -e "   ${BOLD}1${NC}) 安装 / 部署         ${DIM}交互式向导${NC}"
+      if detect_legacy_install; then
+        echo -e "   ${BOLD}2${NC}) 从 install.sh 导入   ${CYAN}${DIM}提取 install.sh 配置并转成 docker${NC}"
+      else
+        echo -e "   ${BOLD}2${NC}) 从备份恢复         ${DIM}复用已有配置${NC}"
+      fi
+      echo -e "   ${BOLD}3${NC}) 诊断                ${DIM}检查环境${NC}"
+    fi
+    echo -e "   ${BOLD}0${NC}) 退出"
+    echo
+    # EOF（Ctrl+D / stdin 被关闭）时 read 返回非 0；不处理会变成死循环刷屏
+    if ! read -r -p "  请选择: " opt; then
+      echo; info "输入结束，退出"; exit 0
+    fi
+    opt="${opt//[[:space:]]/}"   # 容忍误输入的空格
+
+    if ! is_installed; then
+      # 有 install.sh 部署时，2 是「导入」；否则是「从备份恢复」
+      if detect_legacy_install; then
+        case "$opt" in
+          1) do_install; pause ;;
+          2) do_migrate_legacy; pause ;;
+          3) do_doctor; pause ;;
+          0) echo; info "再见"; exit 0 ;;
+          *) warn "无效选项"; sleep 1 ;;
+        esac
+      else
+        case "$opt" in
+          1) do_install; pause ;;
+          2) do_restore; pause ;;
+          3) do_doctor; pause ;;
+          0) echo; info "再见"; exit 0 ;;
+          *) warn "无效选项"; sleep 1 ;;
+        esac
+      fi
+      continue
+    fi
+
+    case "$opt" in
+      1) do_status; pause ;;
+      2) show_logs "" ;;
+      3) do_restart; pause ;;
+      4) menu_power ;;
+      5) do_upgrade; pause ;;
+      6) do_reconfigure; pause ;;
+      7) do_audit; pause ;;
+      8) do_validate; pause ;;
+      9) menu_nodes ;;
+      10) menu_backup ;;
+      11) do_uninstall; pause ;;
+      12) do_purge; pause ;;
+      13) do_link; pause ;;
+      14) do_migrate_legacy; pause ;;
+      0) echo; info "再见"; exit 0 ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+menu_power() {
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}启动 / 停止${NC}"
+    echo
+    echo -e "   1) 启动                    ${DIM}启动成功后启用 unless-stopped${NC}"
+    echo -e "   2) 停止                    ${DIM}手动停止后保持停止${NC}"
+    echo -e "   3) 安全重启                ${DIM}失败时自动停止，避免重启循环${NC}"
+    echo -e "   0) 返回"
+    echo
+    read -r -p "  请选择: " c || return 0
+    case "$c" in
+      1) do_start; pause ;;
+      2) do_stop; pause ;;
+      3) do_restart; pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+menu_nodes() {
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}节点与机器管理${NC}"
+    echo
+    nodes_summary
+    echo
+    echo -e "   1) 添加面板 / 实例       ${DIM}推荐：同一容器连接多个 TXBoard${NC}"
+    echo -e "   2) 创建隔离 TX-Node      ${DIM}自动 tx-node-N / /etc/txnode-N${NC}"
+    echo -e "   3) 添加同面板节点        ${DIM}旧 nodes 模式${NC}"
+    echo -e "   4) 移除同面板节点        ${DIM}旧 nodes 模式${NC}"
+    echo -e "   5) 机器模式设置          ${DIM}单面板旧布局${NC}"
+    echo -e "   6) 查看当前配置摘要      ${DIM}含 instances / nodes / machine${NC}"
+    echo -e "   0) 返回"
+    echo
+    read -r -p "  请选择: " c
+    case "$c" in
+      1) do_add_panel_instance; pause ;;
+      2) do_install_isolated; pause ;;
+      3) do_add_node; pause ;;
+      4) do_remove_node; pause ;;
+      5) do_machine_mode; pause ;;
+      6) do_status; pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+menu_backup() {
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}备份 / 恢复${NC}"
+    echo
+    list_backups
+    echo
+    echo -e "   1) 立即备份              ${DIM}打包 config.yml + compose${NC}"
+    echo -e "   2) 从备份恢复            ${DIM}覆盖当前配置${NC}"
+    echo -e "   3) 查看备份列表 / 路径   ${DIM}$BACKUP_DIR${NC}"
+    echo -e "   4) 清理旧备份            ${DIM}保留最近 10 份${NC}"
+    echo -e "   0) 返回"
+    echo
+    read -r -p "  请选择: " c
+    case "$c" in
+      1) do_backup; pause ;;
+      2) do_restore; pause ;;
+      3) title "备份列表"; list_backups; pause ;;
+      4) prune_backups; pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+prune_backups() {
+  [ -d "$BACKUP_DIR" ] || { warn "没有备份目录"; return 0; }
+  local files count
+  mapfile -t files < <(ls -1t "$BACKUP_DIR" 2>/dev/null || true)
+  count=${#files[@]}
+  if [ "$count" -le 10 ]; then
+    hint "备份数量 $count ≤ 10，无需清理"
+    return 0
+  fi
+  info "共 $count 份备份，将保留最近 10 份"
+  local i=10
+  while [ "$i" -lt "$count" ]; do
+    rm -f "$BACKUP_DIR/${files[$i]}" 2>/dev/null || true
+    i=$((i+1))
+  done
+  ok "已清理 $((count-10)) 份旧备份"
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  非交互 CLI 入口
+# ════════════════════════════════════════════════════════════════════
+usage() {
+  cat <<'HELP'
+
+  tx-node 部署与运维脚本
+
+  用法:
+    bash deploy.sh              进入交互式运维面板（推荐）
+    bash deploy.sh <命令>       非交互执行单个命令
+
+  命令:
+    install        安装 / 重新部署（无参数时进入交互式向导）
+      --mode machine --provider txboard --panel-url URL --machine-id ID --token TOKEN
+                   非交互机器模式安装（TXBoard 一键安装使用）
+      --mode node --panel-url URL --node-id ID --token TOKEN
+                   非交互单节点安装
+      [--provider xboard|txboard] [--kernel singbox|xray] [--log-level info|debug|warn|error]
+      [--audit true|false] [--report-all true|false]
+    migrate        从 install.sh 部署导入配置并转成 docker 部署
+    migrate --dry-run
+                   只预览将要生成的配置，不写入任何文件
+    legacy-cleanup 删除旧 install.sh/systemd runtime，默认保留旧配置
+      [--purge] [--yes]
+                   --purge 同时删除 /etc/xboard-node；不会删除 /etc/txnode
+    upgrade        升级到最新镜像并重建
+    status         查看运行状态与配置摘要
+    start          启动
+    stop           停止
+    restart        重启
+    pause          兼容旧命令；现在等价于 stop
+    logs           查看实时日志
+    reconfigure    修改配置
+    audit          访问审计开关（见下方）
+    validate       配置校验
+    doctor         环境与运行诊断
+    panel-add      向当前容器添加新的面板 / 实例
+    isolated-add   自动创建 tx-node-N 隔离实例
+    backup         备份当前配置
+    restore        从备份恢复
+    uninstall      卸载（保留配置）
+    purge          彻底清除（删除配置、镜像，不可逆）
+    link           安装 / 重建快捷命令 txnode
+    help           显示本帮助
+
+  访问审计（audit）一键设置:
+    txnode audit           显示当前状态并交互式切换
+    txnode audit on        一键开启审计（enabled=true）
+    txnode audit off       一键关闭审计（enabled=false）
+    txnode audit all on    一键开全量上报（report_all=true）
+    txnode audit all off   仅上报命中规则的连接（report_all=false）
+
+    注：report_all=false 时，若面板没配任何启用规则，一条数据都不会上报。
+        要"全量访问日志"请用 all on；要"只记命中"请 all off 并在面板配规则。
+
+  关于 install.sh 导入:
+    txnode 使用独立目录 /etc/txnode，与 install.sh 的 /etc/xboard-node 完全分离，
+    两者可并存。检测到 install.sh 部署时进入面板会自动询问是否导入。
+    转换流程：提取配置 → 启动 txnode → 停止 install.sh 服务（其配置保留可回滚）。
+
+  示例:
+    bash deploy.sh                       # 进面板
+    bash deploy.sh install               # 交互式安装
+    bash deploy.sh install --mode machine --panel-url https://panel.example.com --machine-id 12 --token TOKEN
+                                         # 非交互机器模式安装
+    bash deploy.sh migrate               # 从 install.sh 导入
+    bash deploy.sh migrate --dry-run     # 只看会生成什么
+    bash deploy.sh upgrade               # 直接升级
+    bash deploy.sh uninstall             # 卸载
+
+  装好后可直接用快捷命令:
+    txnode                               # 进运维面板
+    txnode status                        # 同上，直接看状态
+
+  快捷命令没生效？
+    用 bash <(curl ...) 安装时，脚本自身路径是 /dev/fd/63 这类临时文件，
+    软链会在进程退出后失效。执行下面这条即可重建（会重新拉一份脚本到
+    /etc/txnode/deploy.sh 再软链过去）：
+      bash deploy.sh link
+
+HELP
+}
+
+main() {
+  local action="${1:-}"
+
+  if [ -z "$action" ]; then
+    # 无参数 → 交互面板
+    [ "$(id -u)" -eq 0 ] || fail "请用 root 运行（或 sudo bash $0）"
+    [ -d /etc ] || fail "仅支持 Linux"
+    detect_deploy_mode
+    # 已部署机器：在线打开菜单时自动刷新持久化脚本并自愈 txnode 快捷命令。
+    if is_installed; then
+      ensure_cli_link
+    fi
+    # 检测到 install.sh 部署且本机尚无 txnode → 主动询问是否导入
+    if detect_legacy_install && ! is_installed; then
+      clear 2>/dev/null || true
+      banner
+      echo
+      hint "检测到 install.sh 部署（$LEGACY_INSTALL_ROOT / $SERVICE_NAME）"
+      hint "txnode 使用独立目录 $INSTALL_DIR，两者可并存；也可以把它的配置直接导入转换。"
+      echo
+      if confirm "是否现在把 install.sh 部署导入为 txnode（docker）？" "n"; then
+        if do_migrate_legacy; then
+          pause
+        else
+          warn "导入未完成，可稍后在面板里选「从 install.sh 导入」重试"
+          sleep 2
+        fi
+      else
+        hint "已跳过 —— 稍后可在面板里选「从 install.sh 导入」"
+        sleep 1
+      fi
+    fi
+    menu
+    exit 0
+  fi
+
+  case "$action" in
+    help|-h|--help) usage; exit 0 ;;
+  esac
+
+  shift || true
+
+  # migrate 支持 --dry-run
+  local mig_dry=0
+  if [ "$action" = "migrate" ] || [ "$action" = "import" ]; then
+    case "${1:-}" in
+      --dry-run|-n) mig_dry=1; shift || true ;;
+    esac
+  fi
+
+  # status/doctor 只读，但仍需 root 才能读配置与 systemd 状态
+  [ "$(id -u)" -eq 0 ] || fail "请用 root 运行（或 sudo bash $0 $action）"
+  [ -d /etc ] || fail "仅支持 Linux"
+
+  case "$action" in
+    install)     do_install "$@" ;;
+    migrate|import) do_migrate_legacy "$mig_dry" ;;
+    legacy-cleanup) do_legacy_cleanup "$@" ;;
+    upgrade)     do_upgrade ;;
+    remote-upgrade-apply) do_remote_upgrade_apply ;;
+    status)      do_status ;;
+    start)       do_start ;;
+    stop)        do_stop ;;
+    restart)     do_restart ;;
+    pause)       do_pause ;;
+    logs|log)    detect_deploy_mode; show_logs "" ;;
+    reconfigure) do_reconfigure ;;
+    link)        do_link ;;
+    audit)       do_audit "$@" ;;
+    validate)    do_validate ;;
+    doctor)      do_doctor ;;
+    panel-add)   NONINTERACTIVE_INSTALL=0; do_add_panel_instance ;;
+    isolated-add) NONINTERACTIVE_INSTALL=0; do_install_isolated ;;
+    backup)      do_backup ;;
+    restore)     do_restore ;;
+    uninstall)   do_uninstall ;;
+    purge)       do_purge ;;
+    *)
+      warn "未知命令: $action"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+# 仅在被直接执行时运行 main；被 source 时只加载函数定义（便于测试与复用）
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  main "$@"
+fi
+ "$file" >/dev/null 2>&1; then
     return 1
   fi
 
