@@ -1966,55 +1966,45 @@ write_remote_update_status() {
 # both delegate here so upgrade/rollback semantics have one owner.
 perform_docker_upgrade() {
   UPGRADE_OUTCOME="failed"
-  local old_image_id
+  local target="$1" old_image_id old_ref old_compose target_image
+  remote_update_compose_supported || { warn "只支持官方 stable/dev 镜像"; return 1; }
+  old_ref="$(current_compose_image)" || return 1
+  if [ -z "$target" ]; then
+    target="$(current_compose_channel)" || return 1
+  fi
+  target_image="$(official_image_for_channel "$target")" || return 1
   old_image_id=$(docker inspect -f '{{.Image}}' "$APP_NAME" 2>/dev/null || true)
-  [ -n "$old_image_id" ] || {
-    warn "无法读取当前容器镜像 ID"
-    return 1
-  }
-
-  info "当前镜像: $(docker inspect -f '{{.Config.Image}}' "$APP_NAME" 2>/dev/null || echo '-')"
-  info "拉取最新镜像..."
+  [ -n "$old_image_id" ] || { warn "无法读取原容器镜像"; return 1; }
+  old_compose="$COMPOSE_FILE.upgrade-backup.$$"
+  cp -p "$COMPOSE_FILE" "$old_compose" || return 1
+  if ! set_compose_channel "$target"; then rm -f "$old_compose"; return 1; fi
+  info "切换/升级渠道 $old_ref -> $target_image"
   if ! dc pull; then
-    warn "镜像拉取失败，当前容器未改动"
+    mv -f "$old_compose" "$COMPOSE_FILE"
+    warn "拉取失败，已恢复原 Compose；运行容器不变"
     return 1
   fi
-
   if ! reset_container; then
-    warn "清理旧容器失败，升级中止"
+    mv -f "$old_compose" "$COMPOSE_FILE"
+    warn "无法重建，原 Compose 已恢复"
     return 1
   fi
-
-  info "安全重建容器..."
   if guarded_compose_start 1; then
+    rm -f "$old_compose"
     UPGRADE_OUTCOME="succeeded"
     return 0
   fi
-
-  warn "新镜像未通过稳定性/健康检查，尝试自动回滚"
-  if ! docker image inspect "$old_image_id" >/dev/null 2>&1; then
-    warn "旧镜像已不可用，无法自动回滚"
-    UPGRADE_OUTCOME="failed"
-    return 1
+  warn "新镜像未通过健康检查，恢复先前镜像和渠道"
+  mv -f "$old_compose" "$COMPOSE_FILE"
+  if docker image inspect "$old_image_id" >/dev/null 2>&1 && docker tag "$old_image_id" "$old_ref"; then
+    reset_container >/dev/null 2>&1 || true
+    if guarded_compose_start 1; then
+      UPGRADE_OUTCOME="rolled_back"
+      warn "已回滚到原来的镜像与渠道"
+      return 1
+    fi
   fi
-
-  # Re-tag only the previously running local image ID to the fixed official
-  # latest channel. No caller-controlled image reference reaches this code.
-  if ! docker tag "$old_image_id" "$REMOTE_UPDATE_IMAGE"; then
-    warn "恢复旧镜像标签失败"
-    UPGRADE_OUTCOME="failed"
-    return 1
-  fi
-
-  reset_container >/dev/null 2>&1 || true
-  if guarded_compose_start 1; then
-    UPGRADE_OUTCOME="rolled_back"
-    warn "升级失败，已自动回滚到之前运行的镜像"
-    return 1
-  fi
-
-  UPGRADE_OUTCOME="failed"
-  warn "升级与自动回滚均失败，需要人工处理"
+  warn "升级及自动回滚均失败，需人工修复"
   return 1
 }
 
@@ -2065,14 +2055,25 @@ do_remote_upgrade_apply() {
 # ════════════════════════════════════════════════════════════════════
 #  动作：升级
 # ════════════════════════════════════════════════════════════════════
+do_channel() {
+  local target="$1"
+  if [ -z "$target" ]; then
+    current_compose_channel || fail "当前渠道无法识别"
+    return 0
+  fi
+  [[ "$target" =~ ^(stable|dev)$ ]] || fail "channel 只支持 stable/dev"
+  do_upgrade "$target"
+}
 do_upgrade() {
+  local target="$1"
+  if [ -n "$target" ]; then [[ "$target" =~ ^(stable|dev|latest)$ ]] || fail "upgrade 只支持 stable/dev"; fi
   detect_deploy_mode
   ! is_installed && fail "未检测到已部署的 tx-node，请先安装"
 
   case "$DEPLOY_MODE" in
     docker)
       ensure_remote_update_mount || warn "未能写入 Runtime Update 控制目录挂载"
-      if perform_docker_upgrade; then
+      if perform_docker_upgrade "$target"; then
         ok "升级完成，容器运行中（restart=unless-stopped）"
       else
         if [ "${UPGRADE_OUTCOME:-failed}" = "rolled_back" ]; then
@@ -3376,7 +3377,8 @@ menu() {
       echo -e "   ${BOLD}2${NC}) 查看日志            ${DIM}实时跟踪${NC}"
       echo -e "   ${BOLD}3${NC}) 重启                ${DIM}改完配置后用这个${NC}"
       echo -e "   ${BOLD}4${NC}) 启动 / 停止         ${DIM}子菜单${NC}"
-      echo -e "   ${BOLD}5${NC}) 升级                ${DIM}拉取最新镜像并重建${NC}"
+      echo -e "   ${BOLD}5${NC}) 升级                ${DIM}拉取当前渠道镜像并重建${NC}"
+      echo -e "  ${BOLD}15${NC}) 切换稳定/开发版     ${DIM}切换渠道、健康检查、失败回滚${NC}"
       echo -e "   ${BOLD}6${NC}) 修改配置            ${DIM}向导 / 手编 / 日志级别${NC}"
       echo -e "   ${BOLD}7${NC}) 访问审计开关        ${DIM}一键开启 / 关闭审计上报${NC}"
       echo -e "   ${BOLD}8${NC}) 配置校验与诊断      ${DIM}排错用${NC}"
@@ -3442,6 +3444,7 @@ menu() {
       12) do_purge; pause ;;
       13) do_link; pause ;;
       14) do_migrate_legacy; pause ;;
+      15) echo "当前渠道: $(current_compose_channel || echo 未知)"; read -r -p "切换至 stable/dev (留空取消): " ch || true; if [ -n "$ch" ]; then do_channel "$ch"; fi; pause ;;
       0) echo; info "再见"; exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -3562,7 +3565,7 @@ usage() {
                    非交互机器模式安装（TXBoard 一键安装使用）
       --mode node --panel-url URL --node-id ID --token TOKEN
                    非交互单节点安装
-      [--provider xboard|txboard] [--kernel singbox|xray] [--log-level info|debug|warn|error]
+      [--provider xboard|txboard] [--channel stable|dev] [--kernel singbox|xray] [--log-level info|debug|warn|error]
       [--audit true|false] [--report-all true|false]
     migrate        从 install.sh 部署导入配置并转成 docker 部署
     migrate --dry-run
@@ -3570,7 +3573,8 @@ usage() {
     legacy-cleanup 删除旧 install.sh/systemd runtime，默认保留旧配置
       [--purge] [--yes]
                    --purge 同时删除 /etc/xboard-node；不会删除 /etc/txnode
-    upgrade        升级到最新镜像并重建
+    upgrade [stable|dev]  升级当前渠道，或指定渠道切换并升级
+    channel [stable|dev]  查看或切换稳定版/开发版
     status         查看运行状态与配置摘要
     start          启动
     stop           停止
@@ -3686,7 +3690,8 @@ main() {
     install)     do_install "$@" ;;
     migrate|import) do_migrate_legacy "$mig_dry" ;;
     legacy-cleanup) do_legacy_cleanup "$@" ;;
-    upgrade)     do_upgrade ;;
+    upgrade)     do_upgrade "${1:-}" ;;
+    channel)     do_channel "${1:-}" ;;
     remote-upgrade-apply) do_remote_upgrade_apply ;;
     status)      do_status ;;
     start)       do_start ;;
