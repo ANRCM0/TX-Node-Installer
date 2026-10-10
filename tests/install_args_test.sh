@@ -15,6 +15,7 @@ bash -c '
   parse_install_args \
     --mode machine \
     --provider txboard \
+    --channel dev \
     --panel-url "https://panel.example.com/" \
     --machine-id 42 \
     --token "machine-token-123" \
@@ -24,6 +25,7 @@ bash -c '
   [ "$NONINTERACTIVE_INSTALL" = "1" ]
   [ "$MODE_STR" = "machine" ]
   [ "$PANEL_PROVIDER" = "txboard" ]
+  [ "$INSTALL_CHANNEL" = "dev" ]
   [ "$PANEL_URL" = "https://panel.example.com" ]
   [ "$MACHINE_ID" = "42" ]
   [ "$MACHINE_TOKEN" = "machine-token-123" ]
@@ -39,7 +41,7 @@ bash -c '
   grep -Fxq "  type: \"singbox\"" "$CONFIG_FILE"
   grep -Fxq "  enabled: false" "$CONFIG_FILE"
 
-  grep -Fxq "    image: ghcr.io/anrcm0/tx-node:latest" "$COMPOSE_FILE"
+  grep -Fxq "    image: ghcr.io/anrcm0/tx-node:dev" "$COMPOSE_FILE"
   grep -Fxq "    network_mode: host" "$COMPOSE_FILE"
   grep -Fxq "    command: [\"-c\", \"/etc/txnode/config.yml\"]" "$COMPOSE_FILE"
   grep -Fxq "      - $INSTALL_DIR/data:/etc/txnode" "$COMPOSE_FILE"
@@ -66,6 +68,7 @@ bash -c '
   detect_deploy_mode() { DEPLOY_MODE="docker"; }
   is_installed() { return 0; }
   appended=0
+  current_compose_channel() { echo stable; }
   do_add_panel_instance() {
     [ "${NONINTERACTIVE_INSTALL:-0}" = "1" ]
     [ "$MODE_STR" = "machine" ]
