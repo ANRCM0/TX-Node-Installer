@@ -1296,6 +1296,11 @@ do_install() {
 
   if is_installed; then
     if [ "${NONINTERACTIVE_INSTALL:-0}" = "1" ]; then
+      local installed_channel
+      installed_channel="$(current_compose_channel)" || fail "当前部署使用自定义镜像，不能自动附加面板"
+      if [ "$installed_channel" != "$INSTALL_CHANNEL" ]; then
+        fail "当前容器是 $installed_channel 渠道，无法在同一容器安装 $INSTALL_CHANNEL 实例。请先运行 txnode channel $INSTALL_CHANNEL，或部署独立实例。"
+      fi
       do_add_panel_instance
     else
       do_existing_install
