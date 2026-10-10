@@ -860,6 +860,7 @@ EOF
     return 1
   fi
 
+  DATA_DIR="$INSTALL_DIR/data"
   mkdir -p "$INSTALL_DIR" "$BACKUP_DIR" "$REMOTE_UPDATE_DIR" "$DATA_DIR"
   chmod 700 "$DATA_DIR" 2>/dev/null || true
   chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
@@ -1203,6 +1204,7 @@ read_panel_credentials() {
 }
 
 write_config_files() {
+  DATA_DIR="$INSTALL_DIR/data"
   mkdir -p "$INSTALL_DIR" "$REMOTE_UPDATE_DIR" "$DATA_DIR"
   chmod 700 "$DATA_DIR" 2>/dev/null || true
   chmod 700 "$REMOTE_UPDATE_DIR" 2>/dev/null || true
