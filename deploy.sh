@@ -1778,7 +1778,7 @@ set_compose_channel() {
   local image tmp
   image="$(official_image_for_channel "$1")" || return 1
   remote_update_compose_supported || return 1
-  tmp="$COMPOSE_FILE.channel.$"
+  tmp="$COMPOSE_FILE.channel.$BASHPID"
   awk -v image="$image" '
     /^[[:space:]]*image:[[:space:]]*/ {sub(/image:[[:space:]]*[^[:space:]]+/, "image: " image); n++}
     {print}
@@ -1924,7 +1924,7 @@ parse_remote_update_request() {
   [ "$(grep -c '^request_id=' "$file" 2>/dev/null || true)" = "1" ] || return 1
   [ "$(grep -c '^target=' "$file" 2>/dev/null || true)" = "1" ] || return 1
 
-  if grep -Ev '^(schema=1|request_id=[A-Za-z0-9._:-]{1,64}|target=(latest|dev)|[[:space:]]*) "$file" >/dev/null 2>&1; then
+  if grep -Ev '^(schema=1|request_id=[A-Za-z0-9._:-]{1,64}|target=(latest|dev)|[[:space:]]*)$' "$file" >/dev/null 2>&1; then
     return 1
   fi
 
@@ -2056,7 +2056,7 @@ do_remote_upgrade_apply() {
 #  动作：升级
 # ════════════════════════════════════════════════════════════════════
 do_channel() {
-  local target="$1"
+  local target="${1:-}"
   if [ -z "$target" ]; then
     current_compose_channel || fail "当前渠道无法识别"
     return 0
@@ -2065,7 +2065,7 @@ do_channel() {
   do_upgrade "$target"
 }
 do_upgrade() {
-  local target="$1"
+  local target="${1:-}"
   if [ -n "$target" ]; then [[ "$target" =~ ^(stable|dev|latest)$ ]] || fail "upgrade 只支持 stable/dev"; fi
   detect_deploy_mode
   ! is_installed && fail "未检测到已部署的 tx-node，请先安装"
