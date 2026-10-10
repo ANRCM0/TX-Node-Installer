@@ -1047,6 +1047,7 @@ ensure_docker() {
 # 非交互安装参数。用于 TXBoard 等控制面生成可直接复制执行的一键命令。
 # 支持 machine / node 两种模式；未传任何参数时仍走原交互向导。
 parse_install_args() {
+  PANEL_PROVIDER="xboard"
   MODE_STR=""
   PANEL_URL=""
   MACHINE_ID=""
@@ -1063,6 +1064,9 @@ parse_install_args() {
       --mode)
         [ "$#" -ge 2 ] || fail "--mode 缺少参数"
         MODE_STR="$2"; shift 2 ;;
+      --provider)
+        [ "$#" -ge 2 ] || fail "--provider 缺少参数"
+        PANEL_PROVIDER="$2"; shift 2 ;;
       --panel|--panel-url)
         [ "$#" -ge 2 ] || fail "$1 缺少参数"
         PANEL_URL="$2"; shift 2 ;;
@@ -1097,6 +1101,7 @@ parse_install_args() {
   PANEL_URL="${PANEL_URL%/}"
   [[ "$PANEL_URL" =~ ^https?:// ]] || fail "--panel-url 必须以 http:// 或 https:// 开头"
   [[ "$MODE_STR" =~ ^(machine|node)$ ]] || fail "--mode 只支持 machine 或 node"
+  [[ "$PANEL_PROVIDER" =~ ^(xboard|txboard)$ ]] || fail "--provider 只支持 xboard 或 txboard"
   [[ "$KERNEL" =~ ^(singbox|xray)$ ]] || fail "--kernel 只支持 singbox 或 xray"
   [[ "$LOG_LEVEL" =~ ^(info|debug|warn|error)$ ]] || fail "--log-level 只支持 info/debug/warn/error"
   [[ "$AUDIT_ENABLED" =~ ^(true|false)$ ]] || fail "--audit 只支持 true/false"
@@ -1127,6 +1132,7 @@ parse_install_args() {
 }
 
 read_panel_credentials() {
+  PANEL_PROVIDER="xboard"
   echo
   info "配置向导（面板信息可在 Xboard 后台查到）"
   hint "面板地址示例：https://panel.example.com"
@@ -1135,6 +1141,9 @@ read_panel_credentials() {
   read -r -p "面板地址: " PANEL_URL || fail "输入中断，已取消"
   PANEL_URL="${PANEL_URL%/}"
   [[ "$PANEL_URL" =~ ^https?:// ]] || fail "面板地址必须以 http:// 或 https:// 开头"
+  read -r -p "面板协议 [xboard/txboard] (默认 xboard): " PANEL_PROVIDER || fail "输入中断，已取消"
+  PANEL_PROVIDER="${PANEL_PROVIDER:-xboard}"
+  [[ "$PANEL_PROVIDER" =~ ^(xboard|txboard)$ ]] || fail "面板协议只支持 xboard 或 txboard"
 
   echo
   echo "运行模式:"
@@ -1193,6 +1202,7 @@ write_config_files() {
   if [ "$MODE_STR" = "machine" ]; then
     PANEL_BLOCK=$(cat <<EOF
 panel:
+  provider: "${PANEL_PROVIDER:-xboard}"
   url: "$PANEL_URL"
 machine:
   machine_id: $MACHINE_ID
@@ -1202,6 +1212,7 @@ EOF
   else
     PANEL_BLOCK=$(cat <<EOF
 panel:
+  provider: "${PANEL_PROVIDER:-xboard}"
   url: "$PANEL_URL"
   token: "$NODE_TOKEN"
   node_id: $NODE_ID
@@ -2589,6 +2600,7 @@ render_instance_block() {
   if [ "$MODE_STR" = "machine" ]; then
     cat <<EOF
   - panel:
+      provider: "${PANEL_PROVIDER:-xboard}"
       url: "$PANEL_URL"
     machine:
       machine_id: $MACHINE_ID
@@ -2604,6 +2616,7 @@ EOF
   else
     cat <<EOF
   - panel:
+      provider: "${PANEL_PROVIDER:-xboard}"
       url: "$PANEL_URL"
       token: "$NODE_TOKEN"
       node_id: $NODE_ID
@@ -3490,11 +3503,11 @@ usage() {
 
   命令:
     install        安装 / 重新部署（无参数时进入交互式向导）
-      --mode machine --panel-url URL --machine-id ID --token TOKEN
+      --mode machine --provider txboard --panel-url URL --machine-id ID --token TOKEN
                    非交互机器模式安装（TXBoard 一键安装使用）
       --mode node --panel-url URL --node-id ID --token TOKEN
                    非交互单节点安装
-      [--kernel singbox|xray] [--log-level info|debug|warn|error]
+      [--provider xboard|txboard] [--kernel singbox|xray] [--log-level info|debug|warn|error]
       [--audit true|false] [--report-all true|false]
     migrate        从 install.sh 部署导入配置并转成 docker 部署
     migrate --dry-run

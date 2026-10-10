@@ -16,15 +16,15 @@ Non-interactive machine install (used by TXBoard):
 
 ```bash
 curl -fsSL 'https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/deploy.sh' \
-  | sudo bash -s -- install --mode machine \
+  | sudo bash -s -- install --mode machine --provider txboard \
       --panel-url 'https://panel.example.com' \
       --machine-id 12 \
       --token 'MACHINE_TOKEN'
 ```
 
-Optional non-interactive flags include `--kernel singbox|xray`, `--log-level`,
+Optional non-interactive flags include `--provider xboard|txboard`, `--kernel singbox|xray`, `--log-level`,
 `--audit true|false`, and `--report-all true|false`. The non-interactive
-defaults are `singbox`, `info`, audit disabled, and `report_all=false`.
+defaults are `xboard` protocol, `singbox`, `info`, audit disabled, and `report_all=false`.
 
 After installation, use:
 
