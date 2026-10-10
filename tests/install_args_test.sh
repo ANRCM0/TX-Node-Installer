@@ -32,7 +32,7 @@ bash -c '
   write_config_files
 
   grep -Fxq "  url: \"https://panel.example.com\"" "$CONFIG_FILE"
-  grep -Fxq '  provider: "txboard"' "$CONFIG_FILE"
+  grep -Fxq "  provider: \"txboard\"" "$CONFIG_FILE"
   grep -Fxq "machine:" "$CONFIG_FILE"
   grep -Fxq "  machine_id: 42" "$CONFIG_FILE"
   grep -Fxq "  token: \"machine-token-123\"" "$CONFIG_FILE"
