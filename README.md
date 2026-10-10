@@ -22,7 +22,7 @@ curl -fsSL 'https://raw.githubusercontent.com/ANRCM0/TX-Node-Installer/main/depl
       --token 'MACHINE_TOKEN'
 ```
 
-Optional non-interactive flags include `--provider xboard|txboard`, `--kernel singbox|xray`, `--log-level`,
+Optional non-interactive flags include `--provider xboard|txboard`, `--channel stable|dev` (default `stable`), `--kernel singbox|xray`, `--log-level`,
 `--audit true|false`, and `--report-all true|false`. The non-interactive
 defaults are `xboard` protocol, `singbox`, `info`, audit disabled, and `report_all=false`.
 
@@ -66,6 +66,20 @@ The runtime image defaults to:
 ghcr.io/anrcm0/tx-node:latest
 ```
 
+
+## 镜像渠道（Stable / Dev）
+
+本安装器只允许使用官方镜像：
+
+- **稳定版**：`ghcr.io/anrcm0/tx-node:latest`，默认安装和生产升级渠道。
+- **开发版**：`ghcr.io/anrcm0/tx-node:dev`，仅用于测试联调。
+- 使用 `--channel stable|dev` 安装。例如 `txnode install --mode machine --provider txboard --channel dev ...`。
+- 查看当前部署渠道：`txnode channel`；切换到开发版：`txnode channel dev`；切回稳定版：`txnode channel stable`。
+- `txnode upgrade` 升级当前渠道；`txnode upgrade dev` 与 `txnode channel dev` 等效。命令会拉取镜像、重建容器并验证健康，失败时尝试恢复旧 Compose 文件和旧镜像。
+- TXBoard 的远程 Runtime Update 只接受 `latest` 或 `dev` 目标；桥接不接受用户输入的任意镜像仓库、Tag 或脚本命令。旧版仅声明 `latest` 的桥接不支持远程切换开发版，须先升级 Installer。
+- 在同一个共享容器内的多个 Panel 实例必须使用同一镜像渠道。安装命令请求的渠道与已运行容器不一致时会拒绝，避免静默安装成错误版本。需不同渠道请使用隔离部署。
+- 更改 TXBoard 后台的 Machine 镜像渠道只是保存**预期安装渠道**、生成相应安装命令；不会自动影响已运行容器。应单独执行 Runtime 更新操作并确认结果。
+- `dev` 标签只有在 TX-Node main 提交的镜像 CI 成功后才更新；部署开发版前确认对应镜像已发布。不会自动升级节点。
 
 ### Durable runtime data (S8)
 
